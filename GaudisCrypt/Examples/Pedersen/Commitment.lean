@@ -191,33 +191,39 @@ deriving that (`Lens.disjoint_ofst_osnd`, `Lens.disjoint_chain`, …) now live i
 `Language/Lens.lean` — the "move them to the proper place" TODO that used to sit here is done,
 and they are no longer declared in this file.
 
-⚠ They still do **not** fire *by themselves* for tuple assignment of *locals*, for two reasons
-that stack (re-tested 2026-09-05).  First, the macro binds locals as `let`-variables and
-instance search does not unfold local `let`s, so `disjoint c d` is searched at the opaque
-variables.  Second, even written out the two lenses live in `paramListToTuple
-(locals.map (·.fst))`; `paramListToTuple` is `@[reducible]`, but `List.map` is not, so at
-`reducible` transparency the argument stays stuck and the tuple never opens up — the goal
-does not present the `_ × _` that `Lens.disjoint_ofst_osnd` and the `o`-instances are stated
-for.  (Parameters do not have that second problem: `paramTypes` is a literal list, which is
-why a numeral argument of a `call` needs no ascription any more.)  Neither spelling of the
-assignment avoids it — `[lvalRaw|]` sends the parenthesised tuple to `Lens.pair` just as the
-comma-list does:
+⚠ They still do **not** fire *by themselves* for tuple assignment of *locals* (re-tested
+2026-09-07).  The cause is the type the two lenses live in: `paramListToTuple
+(locals.map (·.fst))`.  `paramListToTuple` is `@[reducible]`, but `List.map` is not, so at
+`reducible` transparency its argument stays stuck, `paramListToTuple` cannot match on it, and
+the goal never presents the `_ × _` that `Lens.disjoint_ofst_osnd` and the `o`-instances are
+stated for.  `Lens.intoVars` inherits that and adds nothing of its own — nor can it be stated
+otherwise, since its argument type *is* the stuck one, which is why every locals lens goes
+through `List.map` by construction.  (Parameters escape: `paramTypes` is a literal list, which
+is also why a numeral argument of a `call` needs no ascription any more.)  Neither spelling of
+the assignment avoids it — `[lvalRaw|]` sends the parenthesised tuple to `Lens.pair` just as
+the comma-list does:
 ```
 c, d   <- call S.commit (…);   -- failed to synthesize instance of type class  disjoint c d
 (c, d) <- call S.commit (…);   -- same
 ```
-Since `let`/`have`/`letI`/`haveI` became statements of the `proc` body, though, the instance
-can simply be supplied where it is needed.  Elaboration unfolds both the local `let`s and
-`List.map`, so applying the instances by hand does go through — peel the `chain`
-prefix the two lenses share and finish at the slot where they differ:
+That the macro binds locals as `let`-variables is *not* a second, independent cause, contrary
+to what this note used to claim: on 4.31 instance search does unfold local `let`s.  The same
+two goals `let`-bound succeed at a literal type list and fail at the `List.map` one, exactly
+as the unbound versions do; a plain `def` is what is opaque at `reducible`, a local `let` is
+not.  The fix, then, is a reducible replacement for `locals.map (·.fst)` in
+`LocalVariableState.vars` — with one, `disjoint` synthesizes on its own.
+
+Until that lands: since `let`/`have`/`letI`/`haveI` became statements of the `proc` body, the
+instance can simply be supplied where it is needed.  Elaboration unfolds `List.map`, so
+applying the instances by hand does go through — peel the `chain` prefix the two lenses share
+and finish at the slot where they differ:
 ```
 haveI : disjoint c d :=
   Lens.disjoint_chain _ _ _ (d := Lens.disjoint_chain _ _ _ (d :=
     Lens.disjoint_chain _ _ _ (d := Lens.disjoint_ofst_osnd _ _)));
 ```
-`Correctness` below is written that way.  A macro that binds locals differently (inlining the
-lens chains, or registering the disjointness facts itself) would remove the need; until then
-`HidingExperiment` and `BindingExperiment` still take the cheaper route of pair-typed locals
+`Correctness` below is written that way.  `HidingExperiment` and `BindingExperiment` still
+take the cheaper route of pair-typed locals
 read through `$`-projections — `var cd : Commitment × OpeningKey` then `($cd).1`/`($cd).2`. -/
 
 -- TODO: changes to named variable if CommitmentTypes becomes a structure (but see the
