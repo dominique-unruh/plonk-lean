@@ -6,13 +6,13 @@ import GaudisCrypt.Syntax.Syntax
 A transliteration of EasyCrypt's `theories/crypto/Commitment.ec` (theory
 `CommitmentProtocol`) into the Gaudí module/procedure syntax.
 
-* EC's abstract theory types `value`, `message`, `commitment`, `openingkey` become the
-  type class `CommitmentTypes` (instance-implicit section parameters, so the
-  `moduletype`-generated definitions elaborate — the same pattern as `[ProgramSpec]`).
+* EC's abstract theory types `value`, `message`, `commitment`, `openingkey` become the fields of
+  the structure `CommitmentTypes`, passed as an explicit Lean parameter `(types : CommitmentTypes)`
+  to every `moduletype` and `module` that mentions one of them.
 * EC `module type`s become `moduletype`s.
 * EC's parameterized modules (`Correctness(S)`, `HidingExperiment(S,U)`,
-  `BindingExperiment(S,B)`) become `module X (P : T) { … }` declarations: the calls are written
-  against the parameters' own fields and the holes are inferred from them.
+  `BindingExperiment(S,B)`) become `module X … using (P : T) { … }` declarations: the calls are
+  written against the parameters' own fields and the holes are inferred from them.
 -/
 
 namespace GaudisCrypt.Examples.Pedersen
@@ -26,104 +26,24 @@ Still open:
 
 open GaudisCrypt
 
-class CommitmentTypes where
+structure CommitmentTypes where
   Value : Type
   Message : Type
   Commitment : Type
   OpeningKey : Type
+  -- TODO mark this as instances, e.g. [value_inhabited : Inhabited Value], then see whether we can omit some explicit instances belowwww
   value_inhabited : Inhabited Value
   message_inhabited : Inhabited Message
   commitment_inhabited : Inhabited Commitment
   openingKey_inhabited : Inhabited OpeningKey
 
+-- The `Inhabited` facts stay reachable: the goal determines `types` by inverting the projection.
+instance (types : CommitmentTypes) : Inhabited types.Value := types.value_inhabited
+instance (types : CommitmentTypes) : Inhabited types.Message := types.message_inhabited
+instance (types : CommitmentTypes) : Inhabited types.Commitment := types.commitment_inhabited
+instance (types : CommitmentTypes) : Inhabited types.OpeningKey := types.openingKey_inhabited
 
-
--- TODO Make CommitmentTypes into a structure
--- variable (types : CommitmentTypes) in the section
---
--- Investigated 2026-08-07.  NOT fundamentally blocked — it is a fixable limitation of the
--- `moduletype` command, in two specific places.  What actually fails:
---
---  (1) The command emits a chain of definitions in which the later ones reference the earlier
---      ones *by bare name*:
---          def X.typeRep : ModuleTypeRep := …
---          def X := Module X.typeRep                    -- ← bare `X.typeRep`
---          instance : IsModule X where moduleTypeRep := X.typeRep
---      With a *class* section variable this works by luck: `X.typeRep` picks up an
---      instance-implicit parameter and each bare reference re-resolves it by instance synthesis.
---      With an explicit `(types : CTypes)` the auto-bound variable makes it
---      `X.typeRep : CTypes → ModuleTypeRep`, and the bare reference is then a *function* where a
---      `ModuleTypeRep` is wanted:
---          "Application type mismatch: X.typeRep has type CTypes → ModuleTypeRep but is
---           expected to have type ModuleTypeRep"
---      Fix: thread the explicit section variables through the command's own cross-references.
---
---  (2) The generated accessors are plain `def`s.  Lean infers `noncomputable` for them by itself
---      in the class form (checked: `CommitmentScheme.gen` is noncomputable today), but in the
---      structure form it demands the keyword.  Fix: emit `noncomputable def` — harmless either
---      way, since they are noncomputable regardless.
---
--- Everything else is fine.  The `Inhabited` facts stay reachable (`instance : Inhabited
--- types.Value := types.value_inhabited` works — the goal determines `types` by inverting the
--- projection), and hand-writing what `moduletype` *would* emit, with `types` threaded through,
--- elaborates completely, accessors and `mk`/round-trip lemma included.
---
--- So the earlier note here ("the class form is forced") was right about the *mechanism* but
--- wrong to call it inherent.  Cost of doing it: the two command fixes above, plus writing
--- `types.Value` instead of `Value` everywhere (the `open CommitmentTypes (Value …)` shorthand
--- goes away).  That is a `Language/Syntax2.lean` change, i.e. Dominique's call.
---
--- Update 2026-09-07: (1) is gone, for the *parameter* spelling.  Both commands now take Lean
--- parameters and thread them through their own cross-references, so
---     moduletype Scheme (types : CTypes) { proc gen () -> (types.Value); … }
---     module Corr (types : CTypes) using (S : Scheme types) { … }
--- elaborates as it stands (checked).  A `variable (types : CommitmentTypes)` in the section is
--- still not enough — auto-included section variables are not auto-applied to a bare reference —
--- so the switch means writing `(types : CommitmentTypes)` on each command, not once per section.
-
-/- DON'T DO:
-
-class NonEmptyCommitmentTypes (types : CommitmentTypes) where
-  nonempty_value : Nonempty types.Value
-  nonempty_message : Nonempty types.Message
-  nonempty_commitment : Nonempty types.Commitment
-  nonempty_openingKey : Nonempty types.OpeningKey
-
-  instance (t : CommitmentTypes) [NonEmptyCommitmentTypes t] : Nonempty t.Value := sorry
-  instance (t : CommitmentTypes) [NonEmptyCommitmentTypes t] : Nonempty t.Message := sorry
-  instance (t : CommitmentTypes) [NonEmptyCommitmentTypes t] : Nonempty t.Commitment := sorry
-  instance (t : CommitmentTypes) [NonEmptyCommitmentTypes t] : Nonempty t.OpeningKey := sorry
-
-instance (t : CommitmentTypes) [Nonempty t.Value] [Nonempty t.Message] [Nonempty t.Commitment]
-[Nonempty t.OpeningKey] : NonEmptyCommitmentTypes t :=
-sorry
-
-  variable (types : CommitmentTypes)
-  variable [NonEmptyCommitmentTypes types]
--/
-
-
-/- Done (`ModuleSyntax.lean`): both commands take Lean parameters between the name and the rest of
-the header, the module parameters have moved behind `using`, a comma-separated group in the Lean
-parameters is an error naming `using`, and a single module-typed one is the
-`linter.gaudisCrypt.using` warning. -/
-
-instance [CommitmentTypes] : Inhabited CommitmentTypes.Value :=
-  CommitmentTypes.value_inhabited
-instance [CommitmentTypes] : Inhabited CommitmentTypes.Message :=
-  CommitmentTypes.message_inhabited
-instance [CommitmentTypes] : Inhabited CommitmentTypes.Commitment :=
-  CommitmentTypes.commitment_inhabited
-instance [CommitmentTypes] : Inhabited CommitmentTypes.OpeningKey :=
-  CommitmentTypes.openingKey_inhabited
-
--- TODO: changes to named variable if CommitmentTypes becomes a structure (but see the
--- ⚠ above: that may be blocked)
-variable [ProgramSpec] [CommitmentTypes]
-
--- With structure, replace by `local(?) abbrev Value := CommitmentTypes.Value types` etc.
--- and remove the `open` below
-open CommitmentTypes (Value Message Commitment OpeningKey)
+variable [ProgramSpec]
 
 /-! ## Module types
 
@@ -135,34 +55,29 @@ module type CommitmentScheme = {
 }.
 ``` -/
 
-moduletype CommitmentScheme {
-  proc gen () -> Value;
-  proc commit (Value, Message) -> Commitment × OpeningKey;
-  proc verify (Value, Message, Commitment, OpeningKey) -> Bool;
+moduletype CommitmentScheme (types : CommitmentTypes) {
+  proc gen () -> (types.Value);
+  proc commit (types.Value, types.Message) -> types.Commitment × types.OpeningKey;
+  proc verify (types.Value, types.Message, types.Commitment, types.OpeningKey) -> Bool;
 }
 
 -- EC's `Unhider`: the hiding-game adversary.
-moduletype Unhider {
-  proc choose (Value) -> Message × Message;
-  proc guess (Commitment) -> Bool;
+moduletype Unhider (types : CommitmentTypes) {
+  proc choose (types.Value) -> types.Message × types.Message;
+  proc guess (types.Commitment) -> Bool;
 }
 
 -- EC's `Binder`: the binding-game adversary.
-moduletype Binder {
-  proc bind (Value) -> Commitment × Message × OpeningKey × Message × OpeningKey;
+moduletype Binder (types : CommitmentTypes) {
+  proc bind (types.Value) ->
+    types.Commitment × types.Message × types.OpeningKey × types.Message × types.OpeningKey;
 }
 
-
-example : CommitmentScheme = Module CommitmentScheme.typeRep := rfl
-
-
-
-
-module Correctness using (S : CommitmentScheme) {
-  proc main(m : Message) : Bool {
-    var x : Value;
-    var c : Commitment;
-    var d : OpeningKey;
+module Correctness (types : CommitmentTypes) using (S : CommitmentScheme types) {
+  proc main(m : types.Message) : Bool {
+    var x : types.Value;
+    var c : types.Commitment;
+    var d : types.OpeningKey;
     var b : Bool;
     x <- call S.gen ();
     c,d <- call S.commit ($x, $m);
@@ -170,11 +85,6 @@ module Correctness using (S : CommitmentScheme) {
     return $b
   };
 }
-
-
-/-- `Correctness(S)` elaborates: the functor applies to any `S : CommitmentScheme`. -/
-noncomputable example (S : CommitmentScheme) : procmod (Message) -> Bool :=
-  Module.app Correctness S
 
 /- EC's
 ```
@@ -193,14 +103,15 @@ Two module parameters, so `HidingExperiment` is a functor of the *pair* and each
 functor of the parameters it uses (both, here).  `{0,1}` is `SubProbability.uniform` at `Bool`.
 
 `(m0, m1)` and `(c, d)` are tuple assignments, one local per component, as in EC. -/
-module HidingExperiment using (S : CommitmentScheme, U : Unhider) {
+module HidingExperiment (types : CommitmentTypes)
+    using (S : CommitmentScheme types, U : Unhider types) {
   proc main() : Bool {
-    var x : Value;
-    var m0 : Message;
-    var m1 : Message;
+    var x : types.Value;
+    var m0 : types.Message;
+    var m1 : types.Message;
     var b : Bool;
-    var c : Commitment;
-    var d : OpeningKey;
+    var c : types.Commitment;
+    var d : types.OpeningKey;
     var bg : Bool;
     x <- call S.gen ();
     m0,m1 <- call U.choose ($x);
@@ -212,16 +123,17 @@ module HidingExperiment using (S : CommitmentScheme, U : Unhider) {
 }
 
 /-- `HidingExperiment(S, U)` elaborates, for any scheme and any adversary. -/
-noncomputable example (S : CommitmentScheme) (U : Unhider) :
+noncomputable example (types : CommitmentTypes) (S : CommitmentScheme types) (U : Unhider types) :
     procmod () -> Bool :=
-  Module.app (Module.app HidingExperiment.main S) U
+  Module.app (Module.app (HidingExperiment.main types) S) U
 
 /- `BindingExperiment` is the one place a *message comparison* is needed (`m <> m'`).  Rather than
 a `DecidableEq` field on `CommitmentTypes` — see the note there — it is supplied classically right
 where it is used: the program is never executed, so the comparison only has to denote a `Bool`.
 `local`, so it does not leak to importers. -/
 -- TODO remove
-noncomputable local instance : DecidableEq Message := Classical.decEq _
+noncomputable local instance (types : CommitmentTypes) : DecidableEq types.Message :=
+  Classical.decEq _
 
 /- EC's
 ```
@@ -238,18 +150,16 @@ module BindingExperiment (S:CommitmentScheme, B:Binder) = {
 `Binder.bind` returns `commitment * message * openingkey * message * openingkey`, taken apart
 by a five-wide tuple assignment — note `verify` takes the components in the order
 `(x, m, c, d)`, not the order they arrive in. -/
-module BindingExperiment using (S : CommitmentScheme, B : Binder) {
+module BindingExperiment (types : CommitmentTypes)
+    using (S : CommitmentScheme types, B : Binder types) {
   proc main() : Bool {
-    var x : Value;
-    var c : Commitment;
-    var m : Message;
-    var d : OpeningKey;
-    var m' : Message;
-    var d' : OpeningKey;
-    var v : Bool;
-    var v' : Bool;
+    var x : types.Value, c : types.Commitment;
+    -- TODO: syntax to allow to write `var m m' : types.Message` instead:
+    var m : types.Message, m' : types.Message;
+    var d : types.OpeningKey, d' : types.OpeningKey;
+    var v : Bool, v' : Bool;
     -- TODO: Make this work (needs have's to also surround the return statement in parsing)
-    have _: DecidableEq Message := Classical.decEq _; -- Could be global, but we want to demo ths feature
+    have _: DecidableEq types.Message := Classical.decEq _; -- Could be global, but we want to demo ths feature
     x <- call S.gen ();
     c,m,d,m',d' <- call B.bind ($x);
     v <- call S.verify ($x, $m, $c, $d);
@@ -257,11 +167,5 @@ module BindingExperiment using (S : CommitmentScheme, B : Binder) {
     return $v && $v' && !($m == $m')
   };
 }
-
-/-- `BindingExperiment(S, B)` elaborates, for any scheme and any binder. -/
-noncomputable example (S : CommitmentScheme) (B : Binder) :
-    procmod () -> Bool :=
-  Module.app (Module.app BindingExperiment.main S) B
-
 
 end GaudisCrypt.Examples.Pedersen

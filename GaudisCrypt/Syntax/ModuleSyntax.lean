@@ -219,6 +219,27 @@ def paramBinders (what : String) (ps : Array (TSyntax `gaudi_param)) :
         s!"{what}: a comma-separated group is not a Lean parameter list.  If these are the \
 module parameters, write them after `using`."
 
+/- TODO: the binders the two commands invent for themselves collide with a Lean parameter of the
+same name, and the collision is a hard error, not a cosmetic one.  The names are `m` and `s` and
+`e` (`moduletype`: the module, the record, the expression), and `args` and `t` (`module`: a hole
+instantiation, the empty parameter tuple).  A user parameter named `m` shadows the module binder in
+`def X.gen (m : Nat) (m : X (m := m)) : Module.Proc (procsig () -> (Fin (m+1)))`, so the field type
+reads the module where it wanted the number, and the whole batch fails from there
+("failed to synthesize HAdd (X m✝) ℕ ℕ", then `Unknown constant X.gen`, and so on).  `m`, `s` and
+`args` are emitted by every declaration and so always collide; `t` only when the `using` list is
+empty; `e` never, since it binds inside `proj := fun e => …`, a scope no cross-reference reaches.
+
+Two things to do, and the second on its own is not enough:
+
+ 1. make these idents hygienic, so that a user parameter cannot capture them at all;
+ 2. give them meaningful names regardless — `m`, `s`, `e`, `t` are what shows up in every
+    `#check` and every goal these declarations appear in, and a reader deserves better than
+    single letters there.  `theModule`, `theRecord`, `theExpression`, `holeArgs`, `paramTuple`,
+    or whatever reads best at the use sites.
+
+Hygiene alone would fix the bug and leave the display as `m✝`; renaming alone would only move the
+collision to a less likely name. -/
+
 /-- A name for an anonymous binder position. -/
 private def freshParamName (i : Nat) : Ident := mkIdent (Name.mkSimple s!"_gaudiParam{i}")
 

@@ -129,12 +129,12 @@ local module FakeCommit(U:Unhider) = {
   }
 }.
 ``` -/
-module FakeCommit using (U : Unhider) {
+module FakeCommit using (U : Unhider pedersenTypes) {
   proc main() : Bool {
     var x : F;
     var h : G;
-    var m0 : CommitmentTypes.Message;
-    var m1 : CommitmentTypes.Message;
+    var m0 : pedersenTypes.Message;
+    var m1 : pedersenTypes.Message;
     var b : Bool;
     var d : F;
     var c : G;
@@ -151,11 +151,11 @@ module FakeCommit using (U : Unhider) {
 }
 
 /-- `HidingExperiment(Pedersen, U).main` — the real game, as a module. -/
-noncomputable abbrev hidingGame (U : Unhider) : procmod () -> Bool :=
-  Module.app (Module.app HidingExperiment.main Pedersen) U
+noncomputable abbrev hidingGame (U : Unhider pedersenTypes) : procmod () -> Bool :=
+  Module.app (Module.app (HidingExperiment.main pedersenTypes) Pedersen) U
 
 /-- `FakeCommit(U).main` — the fake game, as a module. -/
-noncomputable abbrev fakeGame (U : Unhider) : procmod () -> Bool :=
+noncomputable abbrev fakeGame (U : Unhider pedersenTypes) : procmod () -> Bool :=
   Module.app FakeCommit U
 
 /-! ## Inlining (EC's `inline*`)
@@ -170,13 +170,13 @@ is the same reduction `fakecommit_half` runs. -/
 
 set_option linter.flexible false in
 /-- `FakeCommit(U).main`, inlined. -/
-theorem fakeGame_inline (U : Unhider) :
+theorem fakeGame_inline (U : Unhider pedersenTypes) :
     procedureDenotation (fakeGame U).procedure ()
       = (ProgramDenotation.uniform : ProgramDenotation State F) >>= fun x =>
-        procedureDenotation (Unhider.choose U).procedure (g ^ x) >>= fun _mm =>
+        procedureDenotation (Unhider.choose pedersenTypes U).procedure (g ^ x) >>= fun _mm =>
         (ProgramDenotation.uniform : ProgramDenotation State Bool) >>= fun b =>
         (ProgramDenotation.uniform : ProgramDenotation State F) >>= fun d =>
-        procedureDenotation (Unhider.guess U).procedure (g ^ d) >>= fun bg =>
+        procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d) >>= fun bg =>
         pure (b == bg) := by
   funext σ
   refine SubProbability.ext_of_expected fun post => ?_
@@ -185,10 +185,10 @@ theorem fakeGame_inline (U : Unhider) :
     FakeCommit.main.procedure.apply_simp, Module.proc, Module.procedure_proc]
   rw [procedureDenotation_eq_procWrap, wp_procWrap]
   change _ = ((ProgramDenotation.uniform : ProgramDenotation State F) >>= fun x =>
-        procedureDenotation (Unhider.choose U).procedure (g ^ x) >>= fun _mm =>
+        procedureDenotation (Unhider.choose pedersenTypes U).procedure (g ^ x) >>= fun _mm =>
         (ProgramDenotation.uniform : ProgramDenotation State Bool) >>= fun b =>
         (ProgramDenotation.uniform : ProgramDenotation State F) >>= fun d =>
-        procedureDenotation (Unhider.guess U).procedure (g ^ d) >>= fun bg =>
+        procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d) >>= fun bg =>
         pure (b == bg)).wp post σ
   simp [programDenotation,
     StmtWithHoles.call, StmtWithHoles.assign, wp_bind, wp_get_g, wp_set_g, wp_zoom, wp_lift,
@@ -204,13 +204,13 @@ theorem fakeGame_inline (U : Unhider) :
 set_option linter.flexible false in
 /-- `HidingExperiment(Pedersen, U).main`, inlined.  Pedersen's own `gen`/`commit` are inlined too
     (their internal samplings become the `x` and `d` draws), via `wp_gen`/`wp_commit`. -/
-theorem hidingGame_inline (U : Unhider) :
+theorem hidingGame_inline (U : Unhider pedersenTypes) :
     procedureDenotation (hidingGame U).procedure ()
       = (ProgramDenotation.uniform : ProgramDenotation State F) >>= fun x =>
-        procedureDenotation (Unhider.choose U).procedure (g ^ x) >>= fun mm =>
+        procedureDenotation (Unhider.choose pedersenTypes U).procedure (g ^ x) >>= fun mm =>
         (ProgramDenotation.uniform : ProgramDenotation State Bool) >>= fun b =>
         (ProgramDenotation.uniform : ProgramDenotation State F) >>= fun d =>
-        procedureDenotation (Unhider.guess U).procedure
+        procedureDenotation (Unhider.guess pedersenTypes U).procedure
             (g ^ d * (g ^ x) ^ (if b then mm.2 else mm.1 : F)) >>= fun bg =>
         pure (b == bg) := by
   funext σ
@@ -220,10 +220,10 @@ theorem hidingGame_inline (U : Unhider) :
     HidingExperiment.main.procedure.apply_simp, Module.proc, Module.procedure_proc]
   rw [procedureDenotation_eq_procWrap, wp_procWrap]
   change _ = ((ProgramDenotation.uniform : ProgramDenotation State F) >>= fun x =>
-        procedureDenotation (Unhider.choose U).procedure (g ^ x) >>= fun mm =>
+        procedureDenotation (Unhider.choose pedersenTypes U).procedure (g ^ x) >>= fun mm =>
         (ProgramDenotation.uniform : ProgramDenotation State Bool) >>= fun b =>
         (ProgramDenotation.uniform : ProgramDenotation State F) >>= fun d =>
-        procedureDenotation (Unhider.guess U).procedure
+        procedureDenotation (Unhider.guess pedersenTypes U).procedure
             (g ^ d * (g ^ x) ^ (if b then mm.2 else mm.1 : F)) >>= fun bg =>
         pure (b == bg)).wp post σ
   simp [module_accessor, Pedersen, Module.proc, Module.procedure_proc, programDenotation,
@@ -242,7 +242,7 @@ theorem hidingGame_inline (U : Unhider) :
   rw [wp_gen]
   have hcommit : ∀ (hh : G) (mm : F)
       (f : ProgramDenotation.Post State
-        (CommitmentTypes.Commitment × CommitmentTypes.OpeningKey)) (st : State),
+        (pedersenTypes.Commitment × pedersenTypes.OpeningKey)) (st : State),
       (procedureDenotation Pedersen.commit.procedure (hh, mm)).wp f st
         = ∑ d : F, f ((g ^ d * hh ^ mm, d), st) / (Fintype.card F : ENNReal) :=
     fun hh mm f st => congrFun (wp_commit (hh, mm) f) st
@@ -269,7 +269,7 @@ argument.
 The `rcases eq_or_ne` steps are bookkeeping EC does not need: a mid-condition of the form
 `x₀ = x₁ ∧ τ₁ = τ₂` has to be turned into an actual substitution before the two sides are
 syntactically the same program. -/
-theorem phi_hi_equiv_eq (U : Unhider) :
+theorem phi_hi_equiv_eq (U : Unhider pedersenTypes) :
     ProgramDenotation.prhl2 (Eq : State → State → Prop)
       (procedureDenotation (hidingGame U).procedure ())
       (procedureDenotation (fakeGame U).procedure ())
@@ -332,9 +332,9 @@ local lemma hi_ll (U<:Unhider):
 ```
 EC discharges this with `islossless; (apply dt_ll || apply DBool.dbool_ll)` — the game is a
 straight-line composition of two lossless samplings and two lossless adversary calls. -/
-theorem hi_ll (U : Unhider)
-    (uc_ll : IsLossless (Unhider.choose U).procedure)
-    (ug_ll : IsLossless (Unhider.guess U).procedure) :
+theorem hi_ll (U : Unhider pedersenTypes)
+    (uc_ll : IsLossless (Unhider.choose pedersenTypes U).procedure)
+    (ug_ll : IsLossless (Unhider.guess pedersenTypes U).procedure) :
     IsLossless (fakeGame U).procedure := by
   intro args τ
   simp only [fakeGame, FakeCommit.apply_simp, FakeCommit.main.apply_simp,
@@ -357,17 +357,17 @@ theorem hi_ll (U : Unhider)
   -- `simp only [ug_ll]` on the general `∀ args σ` form fails on the `Module.Proc` transparency
   -- trap documented in `Pedersen.lean`.)
   have hinner : ∀ τ' : State,
-      (2 : ENNReal) * ((∑ d : F, (procedureDenotation (Unhider.guess U).procedure (g ^ d)).wp
+      (2 : ENNReal) * ((∑ d : F, (procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d)).wp
           (fun _ => (1 : ENNReal)) τ' / (Fintype.card F : ENNReal)) / 2) = 1 := by
     intro τ'
-    have hone : ∀ d : F, (procedureDenotation (Unhider.guess U).procedure (g ^ d)).wp
+    have hone : ∀ d : F, (procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d)).wp
         (fun _ => (1 : ENNReal)) τ' = 1 := fun d => ug_ll (g ^ d) τ'
     simp only [hone]
     rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul, hsum, one_div]
     exact ENNReal.mul_inv_cancel two_ne_zero (by simp)
   simp only [hinner]
   -- `U.choose` likewise contributes only its mass
-  have hchoose : ∀ x : F, (procedureDenotation (Unhider.choose U).procedure (g ^ x)).wp
+  have hchoose : ∀ x : F, (procedureDenotation (Unhider.choose pedersenTypes U).procedure (g ^ x)).wp
       (fun _ => (1 : ENNReal)) τ = 1 := fun x => uc_ll (g ^ x) τ
   simp only [hchoose]
   rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul, hsum]
@@ -382,9 +382,9 @@ local lemma fakecommit_half (U<:Unhider) &m:
 EC: `byphoare; proc; wp; swap 4 3; rnd (pred1 b'); call ug_ll; wp; rnd; call uc_ll; auto`.
 The `swap 4 3` moves the coin `b` past `d` and `c` so that it is drawn *after* `U.guess` has
 fixed `b'`; a fresh fair coin then matches `b'` with probability exactly `1/2`. -/
-theorem fakecommit_half (U : Unhider) (σ : State)
-    (uc_ll : IsLossless (Unhider.choose U).procedure)
-    (ug_ll : IsLossless (Unhider.guess U).procedure) :
+theorem fakecommit_half (U : Unhider pedersenTypes) (σ : State)
+    (uc_ll : IsLossless (Unhider.choose pedersenTypes U).procedure)
+    (ug_ll : IsLossless (Unhider.guess pedersenTypes U).procedure) :
     Pr (fakeGame U) σ = 1 / 2 := by
   refine ENNReal.coe_inj.mp ?_
   rw [Pr_eq_wp]
@@ -408,9 +408,9 @@ theorem fakecommit_half (U : Unhider) (σ : State)
   -- Here `b` was drawn first, so instead: the two coin branches partition, `⟦res⟧ + ⟦¬res⟧ = 1`
   -- pointwise, and `U.guess` is lossless — so the two branch weights sum to `1` at every state.
   have guessSum : ∀ (d : F) (τ : State),
-      (procedureDenotation (Unhider.guess U).procedure (g ^ d)).wp
+      (procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d)).wp
             (fun r : Bool × State => if r.1 = true then 1 else 0) τ
-          + (procedureDenotation (Unhider.guess U).procedure (g ^ d)).wp
+          + (procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d)).wp
             (fun r : Bool × State => if r.1 = false then 1 else 0) τ = 1 := by
     intro d τ
     rw [← ProgramDenotation.wp_add]
@@ -422,10 +422,10 @@ theorem fakecommit_half (U : Unhider) (σ : State)
     exact ug_ll _ τ
   -- hence the whole `b`/`d`/`U.guess` block is `1/2` from any state
   have inner : ∀ τ : State,
-      (∑ d : F, (procedureDenotation (Unhider.guess U).procedure (g ^ d)).wp
+      (∑ d : F, (procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d)).wp
             (fun r : Bool × State => if r.1 = true then 1 else 0) τ
               / (Fintype.card F : ENNReal)) / 2
-        + (∑ d : F, (procedureDenotation (Unhider.guess U).procedure (g ^ d)).wp
+        + (∑ d : F, (procedureDenotation (Unhider.guess pedersenTypes U).procedure (g ^ d)).wp
             (fun r : Bool × State => if r.1 = false then 1 else 0) τ
               / (Fintype.card F : ENNReal)) / 2 = 2⁻¹ := by
     intro τ
@@ -439,10 +439,10 @@ theorem fakecommit_half (U : Unhider) (σ : State)
   -- and that is `1` by losslessness (EC's `call uc_ll`)
   simp only [inner]
   have hconst : ∀ x : F,
-      (procedureDenotation (Unhider.choose U).procedure (g ^ x)).wp
+      (procedureDenotation (Unhider.choose pedersenTypes U).procedure (g ^ x)).wp
           (fun _ => (2⁻¹ : ENNReal)) σ = 2⁻¹ := by
     intro x
-    have hmul : (fun _ : (CommitmentTypes.Message × CommitmentTypes.Message) × State =>
+    have hmul : (fun _ : (pedersenTypes.Message × pedersenTypes.Message) × State =>
         (2⁻¹ : ENNReal)) = fun _ => (2⁻¹ : ENNReal) * 1 := by
       funext p; rw [mul_one]
     rw [hmul, ProgramDenotation.wp_const_mul, uc_ll, mul_one]
@@ -465,7 +465,7 @@ theorem fakecommit_half (U : Unhider) (σ : State)
     `fvP_stmt_le_FVP`, `inFootprint_selfRange`, and `FVP.fvP_proc` being exactly that
     `globalL`-reduction) but are only ever assembled into the RO-specific
     `fvP_proc_le_roLift_compl`.  That lemma belongs next to `FVP.fvP_proc` in `FV.lean`. -/
-theorem hidingGame_self_glob (U : Unhider) :
+theorem hidingGame_self_glob (U : Unhider pedersenTypes) :
     ProgramDenotation.prhl2 (GlobEq U)
       (procedureDenotation (hidingGame U).procedure ())
       (procedureDenotation (hidingGame U).procedure ())
@@ -483,7 +483,7 @@ Assembled the way `Lib/RO/GlobTransfer.lean` assembles its endpoint: relax the p
 
 so that all the *cryptographic* content lives in `phi_hi_equiv_eq` and all the *framework*
 content in `hidingGame_self_glob`. -/
-theorem phi_hi_equiv (U : Unhider) :
+theorem phi_hi_equiv (U : Unhider pedersenTypes) :
     ProgramDenotation.prhl2 (GlobEq U)
       (procedureDenotation (hidingGame U).procedure ())
       (procedureDenotation (fakeGame U).procedure ())
@@ -500,7 +500,7 @@ local lemma phi_hi (U<:Unhider) &m:
 i.e. `byequiv` applied to `phi_hi_equiv`.  `relE.wp_eq` is the `byequiv` bridge; the observable
 `resIndicator` depends only on the result, so `={res}` alone transfers it, and `GlobEq.refl`
 supplies the precondition at the single memory `σ` (EC's `&m` against itself). -/
-theorem phi_hi (U : Unhider) (σ : State) :
+theorem phi_hi (U : Unhider pedersenTypes) (σ : State) :
     Pr (hidingGame U) σ = Pr (fakeGame U) σ := by
   refine ENNReal.coe_inj.mp ?_
   rw [Pr_eq_wp, Pr_eq_wp]
@@ -515,9 +515,9 @@ lemma pedersen_perfect_hiding (U<:Unhider) &m:
   Pr[HidingExperiment(Pedersen,U).main() @ &m : res] = 1%r/2%r.
 proof. by move => uc_ll ug_ll; rewrite (phi_hi U &m) (fakecommit_half U &m). qed.
 ``` -/
-theorem pedersen_perfect_hiding (U : Unhider) (σ : State)
-    (uc_ll : IsLossless (Unhider.choose U).procedure)
-    (ug_ll : IsLossless (Unhider.guess U).procedure) :
+theorem pedersen_perfect_hiding (U : Unhider pedersenTypes) (σ : State)
+    (uc_ll : IsLossless (Unhider.choose pedersenTypes U).procedure)
+    (ug_ll : IsLossless (Unhider.guess pedersenTypes U).procedure) :
     Pr (hidingGame U) σ = 1 / 2 := by
   rw [phi_hi U σ]
   exact fakecommit_half U σ uc_ll ug_ll
