@@ -577,7 +577,9 @@ that mentions a parameter ascribed to `Module (.proc ?sig)`).  Only then, from t
 this typing assigns to those `?sig`, is each procedure emitted as a constant
 `X.<f>.procedure : ProcedureWithHoles …`, in which
 * a `call` whose callee mentions a module parameter has become a **hole** (the callee, having
-  done its job for typing, is dropped).  Two calls with the same callee syntax share one hole;
+  done its job for typing, is dropped).  Two calls with the same callee syntax share one hole.
+  The hole is named after that callee, `S.gen` giving the hole `S_gen`, so that a printed
+  procedure still says which call each of its holes stands for;
 * every other callee is a closed module expression, converted with `Module.Proc.procedure`.
 
 Each procedure also gets a *module* `X.<f>`.  When it uses no module parameter that is simply
@@ -774,11 +776,57 @@ namespace GaudisCrypt.ModuleDecl
 
 open Lean Elab Command Meta Term
 
-/-- The name of the `i`-th generated hole (both the `uses` binder and its call sites). -/
+/-- The positional name of the `i`-th generated hole.  Only a fallback: a hole is normally
+named after the callee it stands for, see `holeIdentsOfCallees`. -/
 def holeIdent (i : Nat) : Ident := mkIdent (Name.mkSimple s!"_hole{i}")
 
-/-- `holeIdent` in callee position. -/
+/-- `holeIdent` in callee position.  Used for the first, throw-away rewriting pass, the one
+that only collects the callees — the names the holes end up with are made from those. -/
 def holeCallee (i : Nat) : Term := holeIdent i
+
+/-- Strip the redundant parentheses a callee is usually written with (`(S.gen)`).  A tuple and
+a type ascription have kinds of their own, so only real parentheses are stripped. -/
+partial def unparen (s : Syntax) : Syntax :=
+  if s.getKind == ``Lean.Parser.Term.paren then unparen (s.getArg 1) else s
+
+/-- The name a hole takes from the callee it was made from: that callee's own name with the
+dots turned into underscores, `S.gen ↦ S_gen`.  `none` for a callee that is not a plain
+identifier (an applied one, say), which then falls back to `holeIdent`. -/
+def holeNameOfCallee? (callee : Term) : Option Name := do
+  let raw := unparen callee.raw
+  guard raw.isIdent
+  let n := raw.getId
+  guard !n.hasMacroScopes
+  let cs ← n.components.mapM fun
+    | .str .anonymous s => some s
+    | _ => none
+  guard !cs.isEmpty
+  return Name.mkSimple (String.intercalate "_" cs)
+
+/-- Names for the holes made from `callees`, in hole order.  A hole is named after its callee,
+and the name is kept clear of `used` (the binders already in scope where the hole will be) and
+of the other holes' names by appending `2`, `3`, … — two calls of `B.bind` on different
+parameters give `B_bind` and `B_bind2`. -/
+def holeIdentsOfCallees (used : Array Name) (callees : Array Term) : Array Ident := Id.run do
+  let mut taken := used
+  let mut out := #[]
+  for i in [0 : callees.size] do
+    let base := (holeNameOfCallee? callees[i]!).getD (holeIdent i).getId
+    let mut nm := base
+    let mut k := 2
+    while taken.contains nm do
+      nm := Name.mkSimple s!"{base}{k}"
+      k := k + 1
+    taken := taken.push nm
+    out := out.push (mkIdent nm)
+  return out
+
+/-- The names a `proc_binder` declares (`x y : T` declares two). -/
+def binderNames (b : TSyntax `proc_binder) : Array Ident :=
+  match b with
+  | `(proc_binder| $id:ident : $_:term) => #[id]
+  | `(proc_binder| $id:ident $ids:ident* : $_:term) => #[id] ++ ids
+  | _ => #[]
 
 /-- Does `s` mention one of the identifiers `names` (the module's parameters)?  A parameter also
 counts as mentioned when it heads a field access (`B.main` is one identifier, not two). -/
@@ -1010,9 +1058,16 @@ def elabProcedure (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term)
     | some hbs =>
         `(proc ( $ps,* ) uses ( $hbs,* ) $[: $rty]? { $[var $locals,* ;]* $body* return $rv })
   let paramNames := paramBs.toList.map (·.1.getId)
-  -- the final (hole) form of the body, and with it the callees in hole order
-  let (holeStmts, callees) :=
-    (stmts.mapM fun s => rewriteCalls paramNames holeCallee s.raw).run #[]
+  -- the callees, in hole order — the hole names are made from them, so this pass throws its
+  -- rewritten body away and only keeps the state
+  let callees := ((stmts.mapM fun s => rewriteCalls paramNames holeCallee s.raw).run #[]).2
+  let procBinders := ps.getElems ++ (locals.map (·.getElems)).flatten
+  let bound := paramBs.map (·.1.getId)
+      ++ (procBinders.map fun b => (binderNames b).map (·.getId)).flatten
+  let holeIds := holeIdentsOfCallees bound callees
+  -- the final (hole) form of the body
+  let (holeStmts, _) :=
+    (stmts.mapM fun s => rewriteCalls paramNames (holeIds[·]!) s.raw).run #[]
   -- pass 1: the body with its callees intact, elaborated with the module parameters in the
   -- local context — this is where the whole body (holes included) is type-checked, and what
   -- determines the hole signatures
@@ -1033,7 +1088,7 @@ def elabProcedure (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term)
   if errorCount (← get).messages > errsBefore then return none
   -- pass 2: now that they are typed, the parameter calls become holes
   let holeBinders ← holeSigs.mapIdxM fun i (hps, hret) =>
-    `(hole_binder| $(holeIdent i):ident : ( $hps,* ) → $hret)
+    `(hole_binder| $(holeIds[i]!):ident : ( $hps,* ) → $hret)
   let procTerm ← mkProc (holeStmts.map (⟨·⟩)) (some holeBinders)
   let declId := mkIdent (nm.getId ++ fn.getId ++ `procedure)
   elabCommand (← `(command| noncomputable def $declId:ident $bs* := $procTerm))

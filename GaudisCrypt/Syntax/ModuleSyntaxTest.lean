@@ -463,4 +463,35 @@ module Quiet (A : TestModule) {
 }
 
 
+/- ### Hole names
+
+A hole is named after the callee it was made from — `S.gen` gives the hole `S_gen` — so that a
+printed procedure says which call each of its holes stands for.  A callee with no name to take
+(an applied one, as in `X` and `Deep` above) falls back to `_holeᵢ`, and a name already in use —
+by a parameter, a local, or an earlier hole — gets a `2`, `3`, … appended. -/
+module HoleNames using (S : TestModule, T : TestModule) : M2 {
+  proc g() : Unit {
+    var S_main : Bool;
+    S_main <- call (S.main) ("hi", (3 : Nat));
+    _ <- call (T.main) ("ho", (4 : Nat));
+    return ();
+  };
+  proc h() : Unit { return (); };
+}
+
+/--
+info: def Experiment.HoleNames.g.procedure : [inst : ProgramSpec] →
+  proctype () → Unit uses ((String, ℕ) → Bool, (String, ℕ) → Bool) :=
+fun [ProgramSpec] ↦
+  proc () uses (S_main2 : (String, ℕ) → Bool, T_main : (String, ℕ) → Bool) : Unit {
+      var S_main : Bool;
+      S_main <- call S_main2 ("hi", 3);
+      call T_main ("ho", 4);
+      return ()
+}
+-/
+#guard_msgs in
+#print HoleNames.g.procedure
+
+
 end Experiment
