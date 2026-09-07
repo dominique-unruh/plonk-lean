@@ -189,7 +189,6 @@ theorem wp_commit (args : G × F)
     Lens.intoParams, Lens.intoVars, Lens.chain, Lens.ofst, Lens.osnd,
     Lens.fst, Lens.snd, Lens.id, ProcedureState.localL,
     LocalVariableState.paramsL, LocalVariableState.varsL]
-  rfl
 
 theorem wp_verify (args : G × F × G × F) (f : ProgramDenotation.Post State Bool) :
     (procedureDenotation

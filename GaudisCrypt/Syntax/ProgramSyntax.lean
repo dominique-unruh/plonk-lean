@@ -827,5 +827,3 @@ end GaudisCrypt
 -- TODO: A `Getter` on its own still prints as `{ get := fun st => … }`, not as
 --   `GaudiExpr[ … ]` (statements and procedures do print in surface syntax).
 -- TODO: Allow _ inside a *tuple* lvalue too (a bare `_` already becomes Setter.throwaway)
--- TODO: `paramListToTuple` is not reducible, so a numeral argument of a `call` has a stuck
---   expected type (`OfNat (paramListToTuple [Nat]) 5`) and needs an ascription.

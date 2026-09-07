@@ -54,7 +54,11 @@ class LocalState : Type _ where
   locals : List Type
 
 -- TODO: rename -> typeListToTuple
-def paramListToTuple : List Type → Type
+/-- Reducible on purpose: at a concrete parameter list the tuple type has to be visible to
+unification at `reducible` transparency, or everything stated about `_ × _` gets stuck on it —
+typeclass resolution (`OfNat (paramListToTuple [Nat]) 5` for a numeral argument of a `call`,
+`disjoint` of two projection lenses) is where it shows. -/
+@[reducible] def paramListToTuple : List Type → Type
   | []      => Unit
   | [x]     => x
   | x :: xs => x × paramListToTuple xs

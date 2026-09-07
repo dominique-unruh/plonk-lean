@@ -195,8 +195,11 @@ and they are no longer declared in this file.
 that stack (re-tested 2026-09-05).  First, the macro binds locals as `let`-variables and
 instance search does not unfold local `let`s, so `disjoint c d` is searched at the opaque
 variables.  Second, even written out the two lenses live in `paramListToTuple
-(locals.map (·.fst))`, which is not reducible, so the goal never presents the `_ × _` that
-`Lens.disjoint_ofst_osnd` and the `o`-instances are stated for.  Neither spelling of the
+(locals.map (·.fst))`; `paramListToTuple` is `@[reducible]`, but `List.map` is not, so at
+`reducible` transparency the argument stays stuck and the tuple never opens up — the goal
+does not present the `_ × _` that `Lens.disjoint_ofst_osnd` and the `o`-instances are stated
+for.  (Parameters do not have that second problem: `paramTypes` is a literal list, which is
+why a numeral argument of a `call` needs no ascription any more.)  Neither spelling of the
 assignment avoids it — `[lvalRaw|]` sends the parenthesised tuple to `Lens.pair` just as the
 comma-list does:
 ```
@@ -205,7 +208,7 @@ c, d   <- call S.commit (…);   -- failed to synthesize instance of type class 
 ```
 Since `let`/`have`/`letI`/`haveI` became statements of the `proc` body, though, the instance
 can simply be supplied where it is needed.  Elaboration unfolds both the local `let`s and
-`paramListToTuple`, so applying the instances by hand does go through — peel the `chain`
+`List.map`, so applying the instances by hand does go through — peel the `chain`
 prefix the two lenses share and finish at the slot where they differ:
 ```
 haveI : disjoint c d :=

@@ -101,9 +101,7 @@ module X (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 
   proc g() : Unit {
     _ <- call (Module.app A myMod) ();
     _ <- call (Module.app A myMod) ();   -- same callee ⇒ same hole
-    -- the `(5 : Nat)` ascription is needed because `paramListToTuple` is not reducible, so the
-    -- expected type of the literal is stuck (see the TODO at the end of the file)
-    _ <- call (myMod.main)  ("hello", (5 : Nat));
+    _ <- call (myMod.main)  ("hello", 5);
     return ();
   };
   proc h() : Unit {
