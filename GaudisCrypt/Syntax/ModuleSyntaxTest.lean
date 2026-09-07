@@ -365,6 +365,39 @@ module Fixed (k : Nat) {
 }
 #check (Fixed : (k : Nat) → Module.Proc (procsig (Fin (k+1)) -> (Fin (k+1))))
 
+/- ### A parameterised `moduletype` as a declared type
+
+`module X … : T` builds the record of its procedures with `T.mk { f₁ := …, … }` when `T` is a
+`moduletype` with exactly these fields, and with an anonymous nest of `Module.pair`s otherwise
+(`moduletypeMk?`).  A parameterised `T` is written applied — `: (Sized n)` — and its constructor
+takes the same arguments, `Sized.mk n`, the command having given `T` and `T.mk` the same binders. -/
+
+module MkSized (n : Nat) : (Sized n) {
+  proc gen() : (Fin (n+1)) { return 0 };
+  proc use(_x : Fin (n+1)) : Bool { return true };
+}
+-- the named form is what makes this reduce: a `Module.pair` record has no `Sized.gen` to project
+example (n : Nat) : Sized.gen n (MkSized n) = MkSized.gen n := by
+  simp only [MkSized, Sized.gen, Sized.mk, Module.fst_pair']
+
+-- all-implicit parameters have to be passed by name, which reaches the constructor unchanged
+module MkPoly {α : Type} [Inhabited α] : (Poly (α := α)) {
+  proc gen() : α { return (default : α) };
+  proc use(_x : α) : Bool { return true };
+}
+example {α : Type} [Inhabited α] : Poly.use (MkPoly (α := α)) = MkPoly.use (α := α) := by
+  simp only [MkPoly, Poly.use, Poly.mk, Module.snd_pair']
+
+-- and with module parameters as well, so that `apply_simp`'s right-hand side is the record too
+module WrapSized (n : Nat) using (S : Sized n) : (Sized n) {
+  proc gen() : (Fin (n+1)) { var r : Fin (n+1); r <- call S.gen (); return $r };
+  proc use(x : Fin (n+1)) : Bool { var b : Bool; b <- call S.use ($x); return $b };
+}
+#check (WrapSized.apply_simp : ∀ (n : Nat) (S : Sized n),
+  Module.app (WrapSized n) S
+    = Sized.mk n { gen := Module.app (WrapSized.gen n) S,
+                   use := Module.app (WrapSized.use n) S })
+
 /- A comma-separated group is what the module parameters used to look like, and is not a Lean
 binder list; it is rejected by name rather than by the parser complaining about the comma. -/
 /--

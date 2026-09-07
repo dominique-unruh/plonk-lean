@@ -1143,13 +1143,32 @@ def rightNest (f : Term → Term → CommandElabM Term) (xs : Array Term) : Comm
   for j in [0 : xs.size - 1] do acc ← f xs[xs.size - 2 - j]! acc
   return acc
 
-/-- If the declared module type is a name introduced by `moduletype` whose fields are exactly the
+/-- If the declared module type is one introduced by `moduletype` whose fields are exactly the
 procedures declared here (same names, order immaterial), its constructor `N.mk`; `none` otherwise.
 `N.mk` takes the record `N.Structure`, so the module can then be written
-`N.mk { f₁ := …, fₙ := … }` rather than as a nest of `Module.pair`s. -/
-def moduletypeMk? (mt? : Option Term) (fns : Array Name) : CommandElabM (Option Ident) := do
+`N.mk { f₁ := …, fₙ := … }` rather than as a nest of `Module.pair`s.
+
+The declared type may be applied to Lean parameters of its own — `: (Sized n)` for a `moduletype
+Sized (n : Nat)` — and the constructor is then applied to the same arguments, `Sized.mk n`.  That
+works positionally because the command gives `N` and `N.mk` the very same binders, so an argument
+list that fits the type fits the constructor: `Sized n` ⟹ `Sized.mk n`, and a `Poly` whose
+parameters are all implicit stays bare at both. -/
+def moduletypeMk? (mt? : Option Term) (fns : Array Name) : CommandElabM (Option Term) := do
   let some mt := mt? | return none
-  let `($id:ident) := mt | return none
+  -- the declared type is parsed at `term:max`, so an applied one arrives parenthesised
+  let mt ← match mt with
+    | `(($t:term)) => pure t
+    | _            => pure mt
+  -- the head has to be a name, but it may carry arguments — taken off the raw syntax rather than
+  -- matched as `$as:term*`, so that a named one (`Poly (α := α)`, the only way to write a
+  -- moduletype whose parameters are implicit) passes through as it stands
+  let (id, args) : Ident × Array Term ←
+    if mt.raw.isIdent then
+      pure ((⟨mt.raw⟩ : Ident), #[])
+    else if mt.raw.getKind == ``Lean.Parser.Term.app && mt.raw[0]!.isIdent then
+      pure ((⟨mt.raw[0]!⟩ : Ident), mt.raw[1]!.getArgs.map fun a => (⟨a⟩ : Term))
+    else
+      return none
   let some n ← (try pure (some (← resolveGlobalConstNoOverload id)) catch _ => pure none)
     | return none
   let env ← getEnv
@@ -1157,18 +1176,19 @@ def moduletypeMk? (mt? : Option Term) (fns : Array Name) : CommandElabM (Option 
   unless env.contains (n.str "mk") && isStructure env structName do return none
   let fields := getStructureFields env structName
   unless fields.size == fns.size && fns.all fields.contains do return none
-  return some (mkIdent (n.str "mk"))
+  let mkId := mkIdent (n.str "mk")
+  if args.isEmpty then return some mkId else return some (← `($mkId $args*))
 
-/-- The record whose field `i` is `fields[i]`: `N.mk { f₁ := …, fₙ := … }` when `mkId?` is the
+/-- The record whose field `i` is `fields[i]`: `N.mk { f₁ := …, fₙ := … }` when `mk?` is the
 constructor of a `moduletype` with exactly these fields (see `moduletypeMk?`), and the right-nested
 `Module.pair` of them — which is the same record, only anonymous — otherwise. -/
-def mkRecord (mkId? : Option Ident) (procs : Array ProcResult) (fields : Array Term) :
+def mkRecord (mk? : Option Term) (procs : Array ProcResult) (fields : Array Term) :
     CommandElabM Term := do
-  match mkId? with
-  | some mkId =>
+  match mk? with
+  | some mk =>
       let fs ← procs.mapIdxM fun i r =>
         `(Lean.Parser.Term.structInstField| $(r.fn):ident := $(fields[i]!))
-      `($mkId { $fs:structInstField,* })
+      `($mk { $fs:structInstField,* })
   | none => rightNest (fun a b => `(GaudisCrypt.Module.pair $a $b)) fields
 
 /-- Declare `X.apply_simp`, the `@[simp]` lemma that applies `X` to its parameters:
@@ -1182,7 +1202,7 @@ list the tuple is the only argument `X` can take, a variable of `Module.Unit`.
 
 Proved by the `module_apply` tactic, which normalises both sides. -/
 def elabApplySimp (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term))
-    (mkId? : Option Ident) (procs : Array ProcResult) : CommandElabM Ident := do
+    (mkId? : Option Term) (procs : Array ProcResult) : CommandElabM Ident := do
   let bs := P.binders
   let n := paramBs.size
   let tId := mkIdent `t
