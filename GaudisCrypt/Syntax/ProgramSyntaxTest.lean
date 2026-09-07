@@ -367,6 +367,23 @@ set_option linter.unusedVariables false in
   return default
 }
 
+/- An *anonymous* binder, `have _ : T := v;` — the usual spelling for one bound only to be found
+by instance resolution — prints as the `_` it was written as.  Lean gives it an inaccessible name
+(`x✝`), which is not a name one could write back, so it is the one binder whose printed name is
+not its name in the term. -/
+/--
+info: proc () : Bool {
+    have _ : Inhabited ℕ := { default := 3 };
+    skip;
+    return true
+}
+-/
+#guard_msgs in
+#roundtrip proc () : Bool {
+  have _ : Inhabited Nat := ⟨3⟩;
+  return true
+}
+
 -- one binder may name several variables of one type, in the parameter list and in a `var` line
 -- alike; it stands for the same list as writing them out, which is how it prints back
 /--

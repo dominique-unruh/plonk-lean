@@ -566,7 +566,9 @@ the two places where the printed form deviates from what one would write by hand
 * a hole call prints as `call A (…)` only inside the `proc` that declares `A` in its `uses`
   clause (which is where the macro turns `call` back into a hole call), and as the internal
   `holecall n (…)` anywhere else;
-* `let`/`have` statements print with their type ascribed (`let x : T := v;`), and `letI`/
+* `let`/`have` statements print with their type ascribed (`let x : T := v;`), an anonymous one
+  under the `_` it was written as (Lean names it inaccessibly, `x✝`, which is not a name that
+  parses back — so a statement that does refer to it makes the delaborators step aside); `letI`/
   `haveI` do not print at all — they *inline* their value during elaboration, so no binder
   of theirs survives in the term to be printed.  What is printed is then the inlined term,
   which is what re-parsing gives back, so the round trip still holds.
@@ -708,17 +710,33 @@ private partial def tupleElems (s : Syntax) : Array Term :=
 private def splitArgTuple (stx : Term) : Array Term :=
   if stx.raw.isOfKind ``Lean.Parser.Term.tuple then tupleElems (stx.raw.getArg 1) else #[stx]
 
+/-- The name a `let`/`have` binder prints under.  `have _ : T := v;` — the usual spelling of a
+binder meant only for instance resolution — gets an inaccessible name from Lean (`x✝`), which is
+not a name one can write; it prints as the `_` it was written as. -/
+private def binderPrintName (nm : Name) : Name :=
+  if nm.hasMacroScopes then `_ else nm
+
+/-- Does `stx` mention this exact name?  Used on an inaccessible binder, whose printed name is
+`_`: if the statements it carries refer to it after all, printing them would lose the reference,
+so the delaborator steps aside instead.  The comparison keeps the macro scopes — erasing them
+would confuse an inaccessible `x✝` with an ordinary variable `x` in the same scope. -/
+private partial def syntaxHasExactIdent (n : Name) : Syntax → Bool
+  | .ident _ _ v _ => v == n
+  | .node _ _ args => args.any (syntaxHasExactIdent n)
+  | _ => false
+
 /-- Peel `n` `let`/`have` binders whose values satisfy `isOk`, then run `k` on the binder
-names, inside the local context they introduce. -/
+names, inside the local context they introduce.  With `anon`, an inaccessible binder is peeled
+too and reported under its printed name (see `binderPrintName`). -/
 private partial def withPeeledLets {α} [Inhabited α] (n : Nat) (isOk : Lean.Expr → Bool)
-    (acc : Array Name) (k : Array Name → DelabM α) : DelabM α := do
+    (acc : Array Name) (k : Array Name → DelabM α) (anon : Bool := false) : DelabM α := do
   if n == 0 then k acc
   else
     match (← getExpr) with
     | .letE nm _ v _ _ => do
         guard (isOk v)
-        guard <| !nm.hasMacroScopes
-        withLetBody (withPeeledLets (n - 1) isOk (acc.push nm) k)
+        guard <| anon || !nm.hasMacroScopes
+        withLetBody (withPeeledLets (n - 1) isOk (acc.push (binderPrintName nm)) k anon)
     | _ => failure
 
 private def isHoleIndex (v : Lean.Expr) : Bool :=
@@ -742,11 +760,12 @@ in the term. -/
 private partial def delabGaudiStmts (holeNames : Array Name) :
     DelabM (Array (TSyntax `gaudi_stmt)) := do
   if let .letE nm _ _ _ nonDep := (← getExpr) then
-    guard <| !nm.hasMacroScopes
     let ty ← withLetVarType delab
     let val ← withLetValue delab
-    let decl ← mkLetDecl (mkIdent nm) ty val
+    let decl ← mkLetDecl (mkIdent (binderPrintName nm)) ty val
     let body ← withLetBody (delabGaudiStmts holeNames)
+    -- an inaccessible binder prints as `_`, so the statements it carries must not name it
+    guard <| !nm.hasMacroScopes || !body.any (syntaxHasExactIdent nm ·.raw)
     return #[← if nonDep then `(gaudi_stmt| have $decl:letDecl; $body:gaudi_stmt*)
                else `(gaudi_stmt| let $decl:letDecl; $body:gaudi_stmt*)]
   match (← getExpr).getAppFnArgs with
@@ -868,7 +887,7 @@ private def delabProc : Delab := do
   let (retParams, retLocals, retSpine, ret) ← withNaryArg 5 <|
     withPeeledLets paramTys.size (·.isAppOf ``Lens.intoParams) #[] fun ps =>
       withPeeledLets localTys.size (·.isAppOf ``Lens.intoVars) #[] fun ls =>
-        withPeeledLets spineNames.size (fun _ => true) #[] fun bs => do
+        withPeeledLets spineNames.size (fun _ => true) #[] (anon := true) fun bs => do
           return (ps, ls, bs, ← delabGaudiExpr)
   guard (retParams == paramNames && retLocals == localNames && retSpine == spineNames)
   let params ← (paramNames.zip paramTys).mapM fun (n, t) =>
