@@ -31,17 +31,15 @@ structure CommitmentTypes where
   Message : Type
   Commitment : Type
   OpeningKey : Type
-  -- TODO mark this as instances, e.g. [value_inhabited : Inhabited Value], then see whether we can omit some explicit instances belowwww
-  value_inhabited : Inhabited Value
-  message_inhabited : Inhabited Message
-  commitment_inhabited : Inhabited Commitment
-  openingKey_inhabited : Inhabited OpeningKey
+  [value_inhabited : Inhabited Value]
+  [message_inhabited : Inhabited Message]
+  [commitment_inhabited : Inhabited Commitment]
+  [openingKey_inhabited : Inhabited OpeningKey]
 
--- The `Inhabited` facts stay reachable: the goal determines `types` by inverting the projection.
-instance (types : CommitmentTypes) : Inhabited types.Value := types.value_inhabited
-instance (types : CommitmentTypes) : Inhabited types.Message := types.message_inhabited
-instance (types : CommitmentTypes) : Inhabited types.Commitment := types.commitment_inhabited
-instance (types : CommitmentTypes) : Inhabited types.OpeningKey := types.openingKey_inhabited
+@[reducible] instance (types : CommitmentTypes) : Inhabited types.Value := types.value_inhabited
+@[reducible] instance (types : CommitmentTypes) : Inhabited types.Message := types.message_inhabited
+@[reducible] instance (types : CommitmentTypes) : Inhabited types.Commitment := types.commitment_inhabited
+@[reducible] instance (types : CommitmentTypes) : Inhabited types.OpeningKey := types.openingKey_inhabited
 
 variable [ProgramSpec]
 
@@ -122,19 +120,6 @@ module HidingExperiment (types : CommitmentTypes)
   };
 }
 
-/-- `HidingExperiment(S, U)` elaborates, for any scheme and any adversary. -/
-noncomputable example (types : CommitmentTypes) (S : CommitmentScheme types) (U : Unhider types) :
-    procmod () -> Bool :=
-  Module.app (Module.app (HidingExperiment.main types) S) U
-
-/- `BindingExperiment` is the one place a *message comparison* is needed (`m <> m'`).  Rather than
-a `DecidableEq` field on `CommitmentTypes` — see the note there — it is supplied classically right
-where it is used: the program is never executed, so the comparison only has to denote a `Bool`.
-`local`, so it does not leak to importers. -/
--- TODO remove
-noncomputable local instance (types : CommitmentTypes) : DecidableEq types.Message :=
-  Classical.decEq _
-
 /- EC's
 ```
 module BindingExperiment (S:CommitmentScheme, B:Binder) = {
@@ -149,7 +134,12 @@ module BindingExperiment (S:CommitmentScheme, B:Binder) = {
 ```
 `Binder.bind` returns `commitment * message * openingkey * message * openingkey`, taken apart
 by a five-wide tuple assignment — note `verify` takes the components in the order
-`(x, m, c, d)`, not the order they arrive in. -/
+`(x, m, c, d)`, not the order they arrive in.
+
+This is also the one place a *message comparison* is needed (`m <> m'`).  Rather than a
+`DecidableEq` field on `CommitmentTypes`, it is supplied classically right where it is used, by
+a `have` in the body: the program is never executed, so the comparison only has to denote a
+`Bool`.  The `have` scopes over the `return` too, which is where the comparison sits. -/
 module BindingExperiment (types : CommitmentTypes)
     using (S : CommitmentScheme types, B : Binder types) {
   proc main() : Bool {
@@ -158,8 +148,8 @@ module BindingExperiment (types : CommitmentTypes)
     var m : types.Message, m' : types.Message;
     var d : types.OpeningKey, d' : types.OpeningKey;
     var v : Bool, v' : Bool;
-    -- TODO: Make this work (needs have's to also surround the return statement in parsing)
-    have _: DecidableEq types.Message := Classical.decEq _; -- Could be global, but we want to demo ths feature
+    -- Could be a global instance, but this demonstrates a local `have` inside a procedure body:
+    have _ : DecidableEq types.Message := Classical.decEq _;
     x <- call S.gen ();
     c,m,d,m',d' <- call B.bind ($x);
     v <- call S.verify ($x, $m, $c, $d);

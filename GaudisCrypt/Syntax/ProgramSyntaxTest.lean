@@ -333,6 +333,40 @@ info: proc (x : ℕ) : ℕ {
   return $u
 }
 
+-- a binder on the body's spine scopes over the `return` expression as well: the macro repeats
+-- it around the return value, which is a field of its own
+/--
+info: proc (x : ℕ) : ℕ {
+    var u : ℕ;
+    let k : ℕ := 7;
+    u <- §x;
+    return §u + k
+}
+-/
+#guard_msgs in
+#roundtrip proc (x : Nat) : Nat {
+  var u : Nat;
+  let k := 7;
+  u <- $x;
+  return $u + k
+}
+
+-- an instance bound by `have` is likewise available to the `return` expression (the linter is
+-- off because a binder used only by instance resolution counts as unreferenced)
+/--
+info: proc () : ℕ {
+    have inst : Inhabited ℕ := { default := 3 };
+    skip;
+    return default
+}
+-/
+#guard_msgs in
+set_option linter.unusedVariables false in
+#roundtrip proc () : Nat {
+  have inst : Inhabited Nat := ⟨3⟩;
+  return default
+}
+
 -- sampling and calls: no arguments, one argument, two arguments, result discarded
 /--
 info: GaudiProg[

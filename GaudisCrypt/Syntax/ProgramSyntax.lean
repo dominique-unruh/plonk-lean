@@ -58,10 +58,11 @@ proc (x : T, y : U) uses (A : (Nat) → Bool, B : (Bool) → Nat) : R {
 * local variables via one or more `var name : T, …;` lines;
 * a body of statements ending in `return e`.
 
-A `let`/`have`/`letI`/`haveI` statement in the body scopes over the rest of the body but
-**not** over `return e` — body and return value are two separate fields of
-`ProcedureWithHoles`, so a binder can only be duplicated into the second, and the copy that
-does not use it would draw an unused-variable warning.  Bind before the `proc` instead.
+A `let`/`have`/`letI`/`haveI` statement in the body scopes over the rest of the body *and*
+over `return e`.  Body and return value are two separate fields of `ProcedureWithHoles`, so
+the binders on the body's *spine* — those of the procedure's own block, each carrying the
+rest of it — are repeated around the return value.  A binder nested inside an `if`/`while`/
+block, on the other hand, ends with that block and does not reach `return e`.
 
 ## Procedure types and signatures
 
@@ -354,6 +355,25 @@ partial def rewriteHoles (holeNames : List Name) (s : TSyntax `gaudi_stmt) :
       `(gaudi_stmt| haveI $d:letDecl; $(← ss.mapM (rewriteHoles holeNames))*)
   | _ => pure s
 
+/-- Wrap `e` in the Lean binders on the *spine* of the statement sequence `ss`: the
+`let`/`have`/`letI`/`haveI` statements of the sequence itself, not those nested inside an
+`if`/`while`/block.  Each such statement carries the rest of its sequence, so the spine is a
+chain — at most one binder per level, recursed into.  `proc` uses this to repeat the body's
+binders around the return value, which is a separate field of `ProcedureWithHoles`. -/
+partial def wrapSpineBinders (ss : Array (TSyntax `gaudi_stmt)) (e : Term) : MacroM Term := do
+  for s in ss do
+    match s with
+    | `(gaudi_stmt| let $d:letDecl; $rest:gaudi_stmt*) =>
+        return ← `(let $d:letDecl; $(← wrapSpineBinders rest e))
+    | `(gaudi_stmt| have $d:letDecl; $rest:gaudi_stmt*) =>
+        return ← `(have $d:letDecl; $(← wrapSpineBinders rest e))
+    | `(gaudi_stmt| letI $d:letDecl; $rest:gaudi_stmt*) =>
+        return ← `(letI $d:letDecl; $(← wrapSpineBinders rest e))
+    | `(gaudi_stmt| haveI $d:letDecl; $rest:gaudi_stmt*) =>
+        return ← `(haveI $d:letDecl; $(← wrapSpineBinders rest e))
+    | _ => pure ()
+  return e
+
 syntax ppGroup("proc" " (" proc_binder,* ")" (ppSpace "uses" " (" hole_binder,* ")")?
          (" : " term:max)? " {")
          (ppIndent(ppLine ppGroup("var " proc_binder,* ";")))*
@@ -420,7 +440,9 @@ macro_rules
     let holeNames := holeBs.toList.map (·.1.getId)
     let stmts' ← stmts.mapM (rewriteHoles holeNames)
     let body ← wrap (binds ++ holeBinds) (← `((GaudiProg[ $stmts'* ] : StmtWithHoles $hCtx $L)))
-    let retval ← wrap binds (← `((GaudiExpr[ $ret ] : Getter _ (ProcedureState $L))))
+    -- the return value repeats the parameter/local `let`s and the body's spine binders
+    let retval ← wrap binds
+      (← wrapSpineBinders stmts' (← `((GaudiExpr[ $ret ] : Getter _ (ProcedureState $L)))))
     `((⟨$localsTerm, $body, $retval⟩ : ProcedureWithHoles $hCtx $sigTerm))
 
 end
@@ -800,6 +822,21 @@ private def delabGaudiProg : Delab := do
   let stmts ← delabGaudiStmts #[]
   `(GaudiProg[ $stmts:gaudi_stmt* ])
 
+/-- The names bound by the `let`/`have` statements on the spine of a printed statement
+sequence, outermost first — exactly the binders `wrapSpineBinders` repeats around the return
+value.  (`letI`/`haveI` inline during elaboration, so no binder of theirs is in either term.) -/
+private partial def spineLetNames (ss : Array (TSyntax `gaudi_stmt)) : Array Name := Id.run do
+  for s in ss do
+    match s with
+    | `(gaudi_stmt| let $d:letDecl; $rest:gaudi_stmt*)
+    | `(gaudi_stmt| have $d:letDecl; $rest:gaudi_stmt*) =>
+        let n := match d.raw.find? (·.isIdent) with
+          | some i => i.getId
+          | none => Name.anonymous
+        return #[n] ++ spineLetNames rest
+    | _ => pure ()
+  return #[]
+
 /-- Print a procedure built by `proc` as `proc (…) uses (…) : R { … }`. -/
 @[delab app.GaudisCrypt.ProcedureWithHoles.mk]
 private def delabProc : Delab := do
@@ -814,12 +851,15 @@ private def delabProc : Delab := do
       withPeeledLets localTys.size (·.isAppOf ``Lens.intoVars) #[] fun ls =>
         withPeeledLets holeSigs.size isHoleIndex #[] fun hs => do
           return (ps, ls, hs, ← delabGaudiStmts hs)
-  -- the return value repeats the parameter and local-variable `let`s (but not the holes)
-  let (retParams, retLocals, ret) ← withNaryArg 5 <|
+  -- the return value repeats the parameter and local-variable `let`s (but not the holes), and
+  -- then the binders on the body's spine, which scope over it too
+  let spineNames := spineLetNames stmts
+  let (retParams, retLocals, retSpine, ret) ← withNaryArg 5 <|
     withPeeledLets paramTys.size (·.isAppOf ``Lens.intoParams) #[] fun ps =>
-      withPeeledLets localTys.size (·.isAppOf ``Lens.intoVars) #[] fun ls => do
-        return (ps, ls, ← delabGaudiExpr)
-  guard (retParams == paramNames && retLocals == localNames)
+      withPeeledLets localTys.size (·.isAppOf ``Lens.intoVars) #[] fun ls =>
+        withPeeledLets spineNames.size (fun _ => true) #[] fun bs => do
+          return (ps, ls, bs, ← delabGaudiExpr)
+  guard (retParams == paramNames && retLocals == localNames && retSpine == spineNames)
   let params ← (paramNames.zip paramTys).mapM fun (n, t) =>
     `(proc_binder| $(mkIdent n):ident : $t)
   let locals ← (localNames.zip localTys).mapM fun (n, t) =>
