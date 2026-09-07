@@ -2,6 +2,7 @@
 
 import GaudisCrypt.Misc
 import GaudisCrypt.Attic.DetermFootprint
+import GaudisCrypt.Attic.TypesModules
 import GaudisCrypt.Language.Footprint
 import GaudisCrypt.ProbProgramRange
 import GaudisCrypt.FV
@@ -66,4 +67,5 @@ import GaudisCrypt.Logic.PRHL.Prhl
 import GaudisCrypt.Logic.PRHL.Tactics
 import GaudisCrypt.Logic.PRHL.UpToBad
 import GaudisCrypt.Examples.Pedersen.Commitment
+import GaudisCrypt.Examples.Pedersen.Hiding
 import GaudisCrypt.Examples.Pedersen.Pedersen
