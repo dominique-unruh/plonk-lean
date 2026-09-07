@@ -1314,9 +1314,11 @@ elab_rules : command
       }) => do
     let P ← nameParams (← paramBinders "module" lps)
     if params.isNone then warnModuleTypedParam P
-    let paramBs? ← params.mapM fun ps => ps.getElems.mapM fun b => match b with
-      | `(proc_binder| $id:ident : $ty:term) => pure (id, ty)
-      | _ => throwUnsupportedSyntax
+    -- as in `proc`, a binder may name several parameters of one module type
+    let paramBs? ← params.mapM fun ps => return (← ps.getElems.mapM fun b => match b with
+      | `(proc_binder| $id:ident : $ty:term) => pure #[(id, ty)]
+      | `(proc_binder| $id:ident $ids:ident* : $ty:term) => pure ((#[id] ++ ids).map (·, ty))
+      | _ => throwUnsupportedSyntax).flatten
     let paramBs := paramBs?.getD #[]
     let mut declared : Array (Name × String) := #[]
     let mut results : Array ProcResult := #[]

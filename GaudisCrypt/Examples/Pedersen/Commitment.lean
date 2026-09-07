@@ -21,7 +21,7 @@ namespace GaudisCrypt.Examples.Pedersen
 Still open:
 - Maybe also support `let A := module ...` or `def A := module ...`
 - `DoesNotUse A X.op` (in a proof, do induction, derive ⊥ from a use of `X.op`) — nothing of
-  the sort exists yet.
+  the sort exists yet.  --> Need clarification: is this something Denis wanted?
 -/
 
 open GaudisCrypt
@@ -74,8 +74,7 @@ moduletype Binder (types : CommitmentTypes) {
 module Correctness (types : CommitmentTypes) using (S : CommitmentScheme types) {
   proc main(m : types.Message) : Bool {
     var x : types.Value;
-    var c : types.Commitment;
-    var d : types.OpeningKey;
+    var c : types.Commitment, d : types.OpeningKey;
     var b : Bool;
     x <- call S.gen ();
     c,d <- call S.commit ($x, $m);
@@ -105,18 +104,15 @@ module HidingExperiment (types : CommitmentTypes)
     using (S : CommitmentScheme types, U : Unhider types) {
   proc main() : Bool {
     var x : types.Value;
-    var m0 : types.Message;
-    var m1 : types.Message;
-    var b : Bool;
-    var c : types.Commitment;
-    var d : types.OpeningKey;
-    var bg : Bool;
+    var m0 m1 : types.Message;
+    var b b' : Bool;
+    var c : types.Commitment, d : types.OpeningKey;
     x <- call S.gen ();
     m0,m1 <- call U.choose ($x);
     b <$ SubProbability.uniform;
     c,d <- call S.commit ($x, if $b then $m1 else $m0);
-    bg <- call U.guess ($c);
-    return $b == $bg
+    b' <- call U.guess ($c);
+    return $b == $b'
   };
 }
 
@@ -144,10 +140,9 @@ module BindingExperiment (types : CommitmentTypes)
     using (S : CommitmentScheme types, B : Binder types) {
   proc main() : Bool {
     var x : types.Value, c : types.Commitment;
-    -- TODO: syntax to allow to write `var m m' : types.Message` instead:
-    var m : types.Message, m' : types.Message;
-    var d : types.OpeningKey, d' : types.OpeningKey;
-    var v : Bool, v' : Bool;
+    var m m' : types.Message;
+    var d d' : types.OpeningKey;
+    var v v' : Bool;
     -- Could be a global instance, but this demonstrates a local `have` inside a procedure body:
     have _ : DecidableEq types.Message := Classical.decEq _;
     x <- call S.gen ();
@@ -157,5 +152,7 @@ module BindingExperiment (types : CommitmentTypes)
     return $v && $v' && !($m == $m')
   };
 }
+
+#print BindingExperiment.main.procedure
 
 end GaudisCrypt.Examples.Pedersen

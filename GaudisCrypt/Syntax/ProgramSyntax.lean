@@ -49,13 +49,15 @@ proc (x : T, y : U) uses (A : (Nat) → Bool, B : (Bool) → Nat) : R {
   return e
 }
 ```
-* parameters `(x : T, …)` (possibly none);
+* parameters `(x : T, …)` (possibly none).  A binder may name several variables of one type,
+  `(x y : T, …)`, and stands for the same list as writing them out one by one — so may a
+  local-variable binder, and a module parameter after `using`;
 * an optional `uses (…)` clause declaring *holes* (abstract sub-procedures), each written
   `name : (T₁, …, Tₙ) → R`.  Inside the body a hole is invoked with the ordinary
   `call A (…)` syntax — `A` resolves to a hole when it is one of the declared names, and to
   a concrete procedure otherwise;
 * an optional return type `: R` (inferred from `return e` when omitted);
-* local variables via one or more `var name : T, …;` lines;
+* local variables via one or more `var name : T, …;` lines (`var u w : V;` declares two);
 * a body of statements ending in `return e`.
 
 A `let`/`have`/`letI`/`haveI` statement in the body scopes over the rest of the body *and*
@@ -288,6 +290,10 @@ open Lean in section
 
 declare_syntax_cat proc_binder
 syntax ident " : " term : proc_binder
+-- several names of the same type in one binder, as in `var m m' : Message;`.  The single-name
+-- form above is kept as its own production (it is what the delaborators build), so the two do
+-- not overlap: this one needs at least two names.
+syntax ident ident+ " : " term : proc_binder
 
 /-- `Lens.id` followed by a chain of `.ofst` (`true`) / `.osnd` (`false`). -/
 private def mkChain (steps : List Bool) : MacroM Term := do
@@ -301,8 +307,11 @@ un-wrapped, so it needs no final `.ofst`). -/
 private def navSteps (k n : Nat) : List Bool :=
   if k + 1 == n then List.replicate k false else true :: List.replicate k false
 
-private def parseBinder : TSyntax `proc_binder → MacroM (Ident × Term)
-  | `(proc_binder| $id:ident : $ty:term) => pure (id, ty)
+/-- The names a binder declares, each paired with the (shared) declared type. -/
+private def parseBinder : TSyntax `proc_binder → MacroM (List (Ident × Term))
+  | `(proc_binder| $id:ident : $ty:term) => pure [(id, ty)]
+  | `(proc_binder| $id:ident $ids:ident* : $ty:term) =>
+      pure ((id :: ids.toList).map (·, ty))
   | _ => Macro.throwUnsupported
 
 /-- A hole declaration `A : (T₁, …, Tₙ) → R` (an abstract procedure with no locals). -/
@@ -387,9 +396,11 @@ macro_rules
         $stmts:gaudi_stmt*
         return $ret:term $[;]?
       }) => do
-    let paramBs := (← params.getElems.toList.mapM parseBinder).toArray
+    -- a binder may declare several names of one type, and is flattened into one entry each
+    let paramBs := (← params.getElems.toList.mapM parseBinder).flatten.toArray
     -- multiple `var …;` lines are concatenated into a single local-variable list
-    let localBs := (← (locals.toList.flatMap (·.getElems.toList)).mapM parseBinder).toArray
+    let localBs :=
+      (← (locals.toList.flatMap (·.getElems.toList)).mapM parseBinder).flatten.toArray
     let holeBs := (← match holes with
       | some hs => hs.getElems.toList.mapM parseHoleBinder
       | none    => pure []).toArray

@@ -311,6 +311,20 @@ module Deep using (A : Module.Arr TestModule (procmod () → Unit), B : TestModu
               (Module.Proc.procedure (Module.app C myMod)))
             (Module.Proc.procedure (Module.app A myMod)))))
 
+-- one `using` binder may name several parameters of the same module type, exactly as writing
+-- them out one by one does
+module SharedType using (A B : TestModule) : M2 {
+  proc g() : Unit {
+    _ <- call (A.main) ("hi", (3 : Nat));
+    _ <- call (B.main) ("ho", (4 : Nat));
+    return ();
+  };
+  proc h() : Unit { return (); };
+}
+#check (SharedType : Module.Arr (Module.Prod TestModule TestModule) M2)
+#check (SharedType.g :
+  Module.Arr TestModule (Module.Arr TestModule (Module.Proc (procsig () -> Unit))))
+
 module NoTypeNoParams {
   proc g() : Unit { return (); };
 }

@@ -367,6 +367,24 @@ set_option linter.unusedVariables false in
   return default
 }
 
+-- one binder may name several variables of one type, in the parameter list and in a `var` line
+-- alike; it stands for the same list as writing them out, which is how it prints back
+/--
+info: proc (x : ℕ, y : ℕ) : ℕ {
+    var u : ℕ, w : ℕ;
+    u <- §x;
+    w <- §y;
+    return §u + §w
+}
+-/
+#guard_msgs in
+#roundtrip proc (x y : Nat) : Nat {
+  var u w : Nat;
+  u <- $x;
+  w <- $y;
+  return $u + $w
+}
+
 -- sampling and calls: no arguments, one argument, two arguments, result discarded
 /--
 info: GaudiProg[
