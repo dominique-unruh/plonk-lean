@@ -129,7 +129,7 @@ local module FakeCommit(U:Unhider) = {
   }
 }.
 ``` -/
-module FakeCommit (U : Unhider) {
+module FakeCommit using (U : Unhider) {
   proc main() : Bool {
     var x : F;
     var h : G;

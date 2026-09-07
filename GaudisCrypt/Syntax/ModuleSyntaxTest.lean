@@ -97,7 +97,7 @@ moduletype M2 {
 
 /- ### `module` declarations -/
 
-module X (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 {
+module X using (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 {
   proc g() : Unit {
     _ <- call (Module.app A myMod) ();
     _ <- call (Module.app A myMod) ();   -- same callee ⇒ same hole
@@ -124,7 +124,7 @@ module X (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 
 #print X
 
 -- two parameters, two holes; `B.main` reaches the parameter through a `moduletype` accessor
-module Y (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 {
+module Y using (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 {
   proc g() : Unit {
     _ <- call (B.main) ("hi", (3 : Nat));
     _ <- call (Module.app A myMod) ();
@@ -255,7 +255,7 @@ module NoParams : M2 {
 #check X.apply_simp
 
 -- … whereas an empty one still makes it a function, of the empty tuple
-module EmptyParams () : M2 {
+module EmptyParams using () : M2 {
   proc g() : Unit { return (); };
   proc h() : Unit { return (); };
 }
@@ -263,7 +263,7 @@ module EmptyParams () : M2 {
 #check (EmptyParams : Module.Arr Module.Unit M2)
 
 -- the module type is optional too; without it `X` gets the anonymous record of its procedures
-module NoType (A : Module.Arr TestModule (procmod () → Unit)) {
+module NoType using (A : Module.Arr TestModule (procmod () → Unit)) {
   proc g() : Unit {
     _ <- call (Module.app A myMod) ();
     return ();
@@ -281,8 +281,8 @@ example (a : Module.Arr TestModule (procmod () → Unit)) :
 
 -- three parameters, so `apply_simp`'s proof has to get through the deeper projections
 -- `fst (snd t)` and `snd (snd t)` — and `g` takes two of them, in declaration order
-module Deep (A : Module.Arr TestModule (procmod () → Unit), B : TestModule,
-             C : Module.Arr TestModule (procmod () → Unit)) : M2 {
+module Deep using (A : Module.Arr TestModule (procmod () → Unit), B : TestModule,
+                   C : Module.Arr TestModule (procmod () → Unit)) : M2 {
   proc g() : Unit {
     _ <- call (Module.app C myMod) ();
     _ <- call (Module.app A myMod) ();
@@ -316,6 +316,83 @@ module NoTypeNoParams {
 }
 -- a one-procedure record is that procedure (`moduletype` nests its fields the same way)
 #check (NoTypeNoParams : Module.Proc (procsig () -> Unit))
+
+
+/- ### Lean parameters
+
+Both commands take ordinary Lean binders between the name and the rest of the header.  Every
+generated declaration is abstracted over them, and refers to its siblings with them applied. -/
+
+moduletype Sized (n : Nat) {
+  proc gen () -> (Fin (n+1));
+  proc use (Fin (n+1)) -> Bool;
+}
+
+-- `n` reaches the field types, and the generated declarations pass it to one another
+#check (Sized.gen : (n : Nat) → Sized n → Module.Proc (procsig () -> (Fin (n+1))))
+#check (Sized.mk_destruct :
+  ∀ (n : Nat) (s : Sized.Structure n), Sized.structure n (Sized.mk n s) = s)
+
+-- implicit and instance parameters too; `Poly.typeRep` needs `α` passed to it *by name*, since
+-- `@` would also expose the auto-included section variable `[ProgramSpec]`
+moduletype Poly {α : Type} [Inhabited α] {
+  proc gen () -> α;
+  proc use (α) -> Bool;
+}
+#check (Poly.typeRep : {α : Type} → [Inhabited α] → ModuleTypeRep)
+
+-- Lean parameters and module parameters at once: `n` before `using`, `S` after it
+module Twice (n : Nat) using (S : Sized n) {
+  proc main() : Bool {
+    var x : Fin (n+1);
+    var b : Bool;
+    x <- call S.gen ();
+    b <- call S.use ($x);
+    return $b
+  };
+}
+#check (Twice : (n : Nat) → Module.Arr (Sized n) (Module.Proc (procsig () -> Bool)))
+#check (Twice.main.apply_simp : ∀ (n : Nat) (S : Sized n),
+  Module.app (Twice.main n) S = Module.proc ((Twice.main.procedure n).instantiate
+    (HoleSigs.Instantiation.push
+      (HoleSigs.Instantiation.push HoleSigs.Instantiation.nil
+        (Module.Proc.procedure (Sized.gen n S)))
+      (Module.Proc.procedure (Sized.use n S)))))
+
+-- Lean parameters with no `using`: the module is a function, but not a module function
+module Fixed (k : Nat) {
+  proc main(y : Fin (k+1)) : (Fin (k+1)) { return $y };
+}
+#check (Fixed : (k : Nat) → Module.Proc (procsig (Fin (k+1)) -> (Fin (k+1))))
+
+/- A comma-separated group is what the module parameters used to look like, and is not a Lean
+binder list; it is rejected by name rather than by the parser complaining about the comma. -/
+/--
+error: module: a comma-separated group is not a Lean parameter list.  If these are the module parameters, write them after `using`.
+-/
+#guard_msgs(error, drop info) in
+module Grouped (A : TestModule, B : TestModule) {
+  proc g() : Unit { return (); };
+}
+
+/- A single module-typed Lean parameter *is* a Lean binder list, so it elaborates — with a
+warning, since it is much more likely to be a module parameter written without `using`. -/
+/--
+warning: module: the Lean parameter `A` has a module type (TestModule).  If it is meant to be a module parameter, write it after `using`.
+
+Disable this warning with `set_option linter.gaudisCrypt.using false`.
+-/
+#guard_msgs(warning, drop info) in
+module Warned (A : TestModule) {
+  proc g() : Unit { return (); };
+}
+
+-- and the option turns it off (no expected message: any warning here would fail the check)
+#guard_msgs(drop info) in
+set_option linter.gaudisCrypt.using false in
+module Quiet (A : TestModule) {
+  proc g() : Unit { return (); };
+}
 
 
 end Experiment

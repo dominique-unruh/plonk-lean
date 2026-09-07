@@ -161,6 +161,156 @@ def logDeclared (ref : Syntax) (declared : Array (Name × String)) : CommandElab
 
 end GaudisCrypt.ModuleDecl
 
+/-! ## Lean parameters of a `module`/`moduletype` declaration
+
+Both commands take, after the name, a list of ordinary Lean binders — types, values, implicit and
+instance arguments — exactly as `def` and `theorem` do:
+```
+moduletype Sized (n : Nat) { proc f (Fin n) -> Bool; }
+module Twice (n : Nat) using (S : Sized n) { … }
+```
+Every declaration the command generates is abstracted over those binders, and every reference one
+generated declaration makes to another passes them along by name (`X.typeRep (n := n)`, so that
+implicit and instance parameters travel too).  That is the whole of the semantics: a parameterised
+declaration is the declaration it would be with those binders written on it by hand.
+
+The *module* parameters are a different thing and are now written after `using`.  They used to be
+written in the same position as the Lean parameters are, and they look like a Lean binder list
+that got a comma in it — which is not valid Lean binder syntax.  Rather than let that fail in the
+parser with a message about the comma, `gaudi_param` parses such a group and the commands reject it
+themselves, pointing at `using`.  A single module parameter, `(S : CommitmentScheme)`, *is* valid
+Lean binder syntax and so parses as a Lean parameter; that is a warning (`linter.gaudisCrypt.using`,
+below), not an error, since a module-typed Lean parameter is a legitimate — if unusual — thing to
+want. -/
+
+open Lean Parser Term in
+/-- `Lean.Parser.Term.bracketedBinder` under a name that `syntax` will accept: the core one is not
+tagged for use in generated parsers ("refusing to generate code for imported parser declaration"),
+and the attribute is what makes an alias of it usable. -/
+@[run_parser_attribute_hooks] def gaudiBinder : Parser := bracketedBinder
+
+/-- One entry of a `module`/`moduletype` parameter list: an ordinary Lean binder, or a
+parenthesised comma-separated group, which is only ever the old spelling of *module* parameters
+and exists here to be rejected with a message naming `using`. -/
+declare_syntax_cat gaudi_param
+
+syntax (name := gaudiParamBinder) gaudiBinder : gaudi_param
+syntax (name := gaudiParamGroup) "(" proc_binder ("," proc_binder)+ ")" : gaudi_param
+
+register_option linter.gaudisCrypt.using : Bool := {
+  defValue := true
+  descr := "(GaudisCrypt) warn when the last Lean parameter of a `module` declaration has a \
+module type (`IsModule`), which usually means `using` was meant instead"
+}
+
+namespace GaudisCrypt.ModuleDecl
+
+open Lean Elab Command Meta Term
+
+/-- The binder syntax of a `gaudi_param` list, with the comma groups rejected.  `what` names the
+command, for the error message. -/
+def paramBinders (what : String) (ps : Array (TSyntax `gaudi_param)) :
+    CommandElabM (Array (TSyntax ``Lean.Parser.Term.bracketedBinder)) :=
+  ps.mapM fun (p : TSyntax `gaudi_param) =>
+    if p.raw.getKind == ``gaudiParamBinder then
+      pure ⟨p.raw[0]!⟩
+    else
+      throwErrorAt p
+        s!"{what}: a comma-separated group is not a Lean parameter list.  If these are the \
+module parameters, write them after `using`."
+
+/-- A name for an anonymous binder position. -/
+private def freshParamName (i : Nat) : Ident := mkIdent (Name.mkSimple s!"_gaudiParam{i}")
+
+/-- The Lean parameters of a `module`/`moduletype` declaration: the binders every generated
+declaration is abstracted over, and the names that pass them from one to the next. -/
+structure LeanParams where
+  /-- The binders, every position named (see `nameParams`). -/
+  binders : Array (TSyntax ``Lean.Parser.Term.bracketedBinder) := #[]
+  /-- Their names, in order. -/
+  args : Array Ident := #[]
+
+/-- Give every binder position a name, and return the binders so named together with the arguments
+that pass them on.  A reference from one generated declaration to another names each parameter, so
+it needs a name even for the positions the user left anonymous (`[Inhabited α]`, `(_ : T)`). -/
+def nameParams (bs : Array (TSyntax ``Lean.Parser.Term.bracketedBinder)) :
+    CommandElabM LeanParams := do
+  let mut out : Array (TSyntax ``Lean.Parser.Term.bracketedBinder) := #[]
+  let mut args : Array Ident := #[]
+  let mut n := 0
+  for b in bs do
+    let k := b.raw.getKind
+    if k == ``Lean.Parser.Term.instBinder then
+      let opt := b.raw[1]
+      if opt.getNumArgs == 0 then
+        let id := freshParamName n
+        n := n + 1
+        let ty : Term := ⟨b.raw[2]⟩
+        out := out.push (← `(bracketedBinder| [$id : $ty]))
+        args := args.push id
+      else
+        out := out.push b
+        args := args.push ⟨opt[0]⟩
+    else if k == ``Lean.Parser.Term.explicitBinder || k == ``Lean.Parser.Term.implicitBinder ||
+        k == ``Lean.Parser.Term.strictImplicitBinder then
+      let mut ids : Array Syntax := #[]
+      for idStx in b.raw[1].getArgs do
+        if idStx.isIdent then
+          ids := ids.push idStx
+          args := args.push ⟨idStx⟩
+        else
+          let id := freshParamName n
+          n := n + 1
+          ids := ids.push id.raw
+          args := args.push id
+      out := out.push ⟨b.raw.setArg 1 (Syntax.node .none nullKind ids)⟩
+    else
+      throwErrorAt b "module: unsupported parameter binder"
+  return { binders := out, args }
+
+/-- How a generated declaration refers to another one: bare when there are no parameters, and
+`X.f (a₁ := a₁) … (aₙ := aₙ)` when there are.  *Named* arguments, not `@`: `@` would also expose
+the section variables auto-included in the referenced declaration (`[ProgramSpec]` and friends),
+which are none of this command's business, while a name reaches an implicit or instance parameter
+without disturbing them. -/
+def LeanParams.ref (P : LeanParams) (id : Ident) : CommandElabM Term := do
+  if P.args.isEmpty then return id
+  let named : Array (TSyntax ``Lean.Parser.Term.namedArgument) ←
+    P.args.mapM fun a => `(Lean.Parser.Term.namedArgument| ($a := $a))
+  `($id $(named.map fun a => (⟨a.raw⟩ : Term))*)
+
+/-- Run `k` with the Lean parameters in the local context, so that a term mentioning them (a
+procedure body, a signature to be read back) can be elaborated. -/
+def LeanParams.withBinders {α} (P : LeanParams) (k : TermElabM α) : TermElabM α :=
+  Term.elabBinders (P.binders.map (·.raw)) fun _ => k
+
+/-- Warn when the last Lean parameter of a `module` declaration has a module type, which almost
+always means the module parameters were written without `using`.  Silent when the declaration has a
+`using` clause (the author has then clearly chosen), and suppressed by
+`set_option linter.gaudisCrypt.using false`. -/
+def warnModuleTypedParam (P : LeanParams) : CommandElabM Unit := do
+  let bs := P.binders
+  unless (← getOptions).get linter.gaudisCrypt.using.name true do return
+  let some last := bs.back? | return
+  unless last.raw.getKind == ``Lean.Parser.Term.explicitBinder do return
+  unless last.raw[1].getNumArgs == 1 && last.raw[2].getNumArgs == 2 do return
+  let x : Term := ⟨last.raw[1][0]⟩
+  let ty : Term := ⟨last.raw[2][1]⟩
+  let isMod ← runTermElabM fun _ => do
+    try
+      Term.elabBinders (bs.pop.map (·.raw)) fun _ => do
+        let tyE ← Term.elabType ty
+        Term.synthesizeSyntheticMVarsNoPostponing
+        let cls ← mkAppM ``GaudisCrypt.IsModule #[← instantiateMVars tyE]
+        return (← synthInstance? cls).isSome
+    catch _ => return false
+  if isMod then
+    logWarningAt last m!"module: the Lean parameter `{x}` has a module type ({ty}).  If it is \
+meant to be a module parameter, write it after `using`.\n\n\
+Disable this warning with `set_option linter.gaudisCrypt.using false`."
+
+end GaudisCrypt.ModuleDecl
+
 /-- Proves the `apply_simp` field of the `X.f.utilities : ModuleTypeUtilities …` that `moduletype`
 emits for each field — `∀ m, Module.app accessorModule m = X.f m`, relating the accessor *as a
 module* (a projection `.abs` of `ModuleExpression`s) to the accessor *as a Lean function* (a chain
@@ -239,14 +389,23 @@ ModuleTypeUtilities …` per field — the accessor as a *module* (a projection 
 level of expressions: `(Name.fᵢ m).expression = (proj m.expression).reduce`).  Bundling them keeps
 one name per field in the namespace instead of one per fact.
 
-Everything it declares is reported by `logDeclared`. -/
-syntax "moduletype " ident "{" moduletypeField* "}" : command
+`Name` may take ordinary Lean parameters, written as for a `def`:
+`moduletype Sized (n : Nat) { proc f (Fin n) -> Bool; }`.  Every declaration above is then
+abstracted over them and refers to its siblings with them applied (see the section on Lean
+parameters).
 
-open Lean Elab Command in
+Everything it declares is reported by `logDeclared`. -/
+-- `atomic`, because an implicit parameter `{α : Type}` and the `{ … }` body start with the same
+-- token: without it the parser commits to reading the body as one more parameter
+syntax "moduletype " ident (atomic(ppSpace gaudi_param))* "{" moduletypeField* "}" : command
+
+open Lean Elab Command GaudisCrypt.ModuleDecl in
 elab_rules : command
-  | `(moduletype $nm:ident { $fields:moduletypeField* }) => do
+  | `(moduletype $nm:ident $params:gaudi_param* { $fields:moduletypeField* }) => do
       let n := fields.size
       if n == 0 then throwError "moduletype needs at least one field"
+      let P ← nameParams (← paramBinders "moduletype" params)
+      let bs := P.binders
       -- per field: the field name and its `ModuleTypeRep`
       let fns ← fields.mapM fun f => match f with
         | `(moduletypeField| module $fn:ident : $_ ;)         => pure fn
@@ -282,19 +441,28 @@ elab_rules : command
       let projId : Nat → Ident := fun i => mkIdent ((nb.str "Structure") ++ fns[i]!.getId)
       let mId := mkIdent `m
       let sId := mkIdent `s
+      -- how the generated declarations refer to one another: with the Lean parameters applied
+      let typeRepR ← P.ref moduleTypeId
+      let nmR      ← P.ref nm
+      let structR  ← P.ref structId
+      let ctorR    ← P.ref ctorId
+      let mkR      ← P.ref mkId
+      let structFnR ← P.ref structFn
+      let accRs    ← accIds.mapM P.ref
+      let projRs   ← (Array.range n).mapM fun i => P.ref (projId i)
       -- (1) `X.typeRep` names the underlying `ModuleTypeRep`; `X := Module X.typeRep`.  `X` is a
       -- plain (non-reducible) def, so the `IsModule (Module t)` instance does not apply to it and
       -- it gets its own — without which `X` could not appear in a `Module.Arr`/`Module.Prod`.
-      elabCommand (← `(def $moduleTypeId : _root_.GaudisCrypt.ModuleTypeRep := $prodT))
-      elabCommand (← `(def $nm := _root_.GaudisCrypt.Module $moduleTypeId))
+      elabCommand (← `(def $moduleTypeId $bs* : _root_.GaudisCrypt.ModuleTypeRep := $prodT))
+      elabCommand (← `(def $nm $bs* := _root_.GaudisCrypt.Module $typeRepR))
       -- the instance is named explicitly with the very name Lean's own `mkInstanceName` would
       -- have invented for it (`instIsModuleX`), so that it can be reported below — the two cannot
       -- drift apart, since it is the same function that picks it
-      let instTy ← `(_root_.GaudisCrypt.IsModule $nm)
-      let instId := mkIdent (← mkInstanceName #[] instTy)
-      elabCommand (← `(instance $instId:ident : $instTy where moduleTypeRep := $moduleTypeId))
+      let instTy ← `(_root_.GaudisCrypt.IsModule $nmR)
+      let instId := mkIdent (← mkInstanceName (bs.map (·.raw)) instTy)
+      elabCommand (← `(instance $instId:ident $bs* : $instTy where moduleTypeRep := $typeRepR))
       -- (2) the record structure
-      elabCommand (← `(structure $structId where $[$fns:ident : $fts:term]*))
+      elabCommand (← `(structure $structId $bs* where $[$fns:ident : $fts:term]*))
       -- (3) accessors: field `i` is `fst (snd^i m)`, or `snd^(n-1) m` for the last.  Beside the
       -- accessor `X.fᵢ` itself, what is derivable about it goes into one `X.fᵢ.utilities :
       -- ModuleTypeUtilities …` — the accessor as a *module* (a projection is a module morphism),
@@ -316,33 +484,37 @@ elab_rules : command
           e ← `(_root_.GaudisCrypt.Module.fst' $e)
           me ← `(_root_.GaudisCrypt.ModuleExpression.fst $me)
           pe ← `(_root_.GaudisCrypt.ModuleExpression.fst $pe)
-        elabCommand (← `(@[module_accessor] noncomputable def $accId ($mId : $nm) : $ft := $e))
-        elabCommand (← `(noncomputable def $(utilIds[i]!) :
-            _root_.GaudisCrypt.ModuleTypeUtilities $nm $ft $accId where
+        elabCommand (← `(@[module_accessor] noncomputable def $accId $bs* ($mId : $nmR) : $ft :=
+          $e))
+        elabCommand (← `(noncomputable def $(utilIds[i]!) $bs* :
+            _root_.GaudisCrypt.ModuleTypeUtilities $nmR $ft $(accRs[i]!) where
           proj := fun $eId => $pe
           accessorModule := _root_.GaudisCrypt.ModuleExpression.toModule
             (m := _root_.GaudisCrypt.ModuleExpression.abs $me)
           apply_simp := by accessor_apply $accId
           expression_eq := by accessor_expression $accId))
       -- (4) constructor: right-nested `Module.pair`
-      let mut mkBody : Term ← `($(projId (n-1)) $sId)
+      let mut mkBody : Term ← `($(projRs[n-1]!) $sId)
       for i in [0:n-1] do
         let j := n - 2 - i
-        let pj := projId j
+        let pj := projRs[j]!
         mkBody ← `(_root_.GaudisCrypt.Module.pair' ($pj $sId) $mkBody)
-      elabCommand (← `(@[reducible] noncomputable def $mkId ($sId : $structId) : $nm := $mkBody))
+      elabCommand (← `(@[reducible] noncomputable def $mkId $bs* ($sId : $structR) : $nmR :=
+        $mkBody))
       -- (5) destructor
       let args ← (Array.range n).mapM fun i => do
-        let accId : Ident := accIds[i]!
-        `($accId $mId)
-      elabCommand (← `(noncomputable def $structFn ($mId : $nm) : $structId := $ctorId $args*))
+        let accR : Term := accRs[i]!
+        `($accR $mId)
+      elabCommand (← `(noncomputable def $structFn $bs* ($mId : $nmR) : $structR :=
+        $ctorR $args*))
       -- (6) / (7) round-trip lemmas
       let baseLemmas : Array Ident := #[mkId, structFn] ++ accIds
-      elabCommand (← `(@[simp] theorem $(mkIdent (nb.str "mk_destruct")) ($sId : $structId) :
-          $structFn ($mkId $sId) = $sId := by simp [$[$baseLemmas:ident],*]))
+      elabCommand (← `(@[simp] theorem $(mkIdent (nb.str "mk_destruct")) $bs*
+          ($sId : $structR) :
+          $structFnR ($mkR $sId) = $sId := by simp [$[$baseLemmas:ident],*]))
       let dmLemmas : Array Ident := baseLemmas.push (mkIdent `Module.pair_fst_snd')
-      elabCommand (← `(@[simp] theorem $(mkIdent (nb.str "destruct_mk")) ($mId : $nm) :
-          $mkId ($structFn $mId) = $mId := by simp [$[$dmLemmas:ident],*]))
+      elabCommand (← `(@[simp] theorem $(mkIdent (nb.str "destruct_mk")) $bs* ($mId : $nmR) :
+          $mkR ($structFnR $mId) = $mId := by simp [$[$dmLemmas:ident],*]))
       -- (8) report the batch, the same way the `module` command does
       let mut declared : Array (Name × String) :=
         #[(moduleTypeId.getId, "the underlying ModuleTypeRep"),
@@ -360,10 +532,10 @@ elab_rules : command
           (nb.str "destruct_mk", "round-trip: rebuilding a destructed module")]
       GaudisCrypt.ModuleDecl.logDeclared (← getRef) declared
 
-/-! ## Module definitions — `module X (…) : T { proc f (…) : R { … }; … }`
+/-! ## Module definitions — `module X … using (…) : T { proc f (…) : R { … }; … }`
 
 ```
-module X (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 {
+module X using (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 {
   proc g () : Unit {
     _ <- call (Module.app A myMod) ();
     _ <- call (myMod.main) ("hello", 5);
@@ -372,9 +544,18 @@ module X (A : Module.Arr TestModule (procmod () → Unit), B : TestModule) : M2 
   proc h () : Unit { return (); };
 }
 ```
-declares a module `X` with module *parameters* `A`, `B` (the parameter list is optional) whose
+declares a module `X` with module *parameters* `A`, `B` (the `using` clause is optional) whose
 fields are the procedures `g`, `h`.  Procedure bodies use the ordinary statement syntax, except
 that the callee of a `call` is a *module* (`Module.Proc sig`) rather than a bare `Procedure sig`.
+
+Between the name and `using` come ordinary Lean parameters, as for a `def` — `module Twice (n : Nat)
+using (S : CommitmentScheme) { … }`.  Every declaration listed below is abstracted over them and
+refers to its siblings with them applied; see the section on Lean parameters.  They are a different
+thing from the module parameters, which is why the latter now need `using` to introduce them: a
+module parameter list is *almost* a Lean binder list, and one that happens to be exactly a Lean
+binder list — a single `(S : CommitmentScheme)` — would otherwise be read as either at the parser's
+whim.  Written without `using`, that is now a Lean parameter, with a warning
+(`linter.gaudisCrypt.using`) saying so.
 
 Elaboration is in two passes.  First the whole body of each procedure is type-checked *as
 written* — with the module parameters in the local context and every callee in place (each callee
@@ -436,7 +617,11 @@ syntax "proc " ident "(" proc_binder,* ")" (" : " term:max)? "{"
          "return" term (";")?
        "}" (";")? : gaudi_module_proc
 
-syntax "module " ident ("(" proc_binder,* ")")? (" : " term:max)? "{"
+-- `atomic` on the Lean parameters, because an implicit one (`{α : Type}`) and the `{ … }` body
+-- start with the same token: without it the parser commits to reading the body as one more
+-- parameter
+syntax "module " ident (atomic(ppSpace gaudi_param))*
+         (ppSpace "using" " (" proc_binder,* ")")? (" : " term:max)? "{"
          gaudi_module_proc*
        "}" : command
 
@@ -739,10 +924,11 @@ partial def toModuleExpr (params : List (FVarId × Nat)) (e : Lean.Expr) : TermE
 /-- The signature of an already-declared procedure, as syntax (`procsig (…) -> …`).  Used for the
 type of the generated module, where `ProcedureWithHoles.signature p` would work too but would show
 up unevaluated in every hover. -/
-def procSig (procId : Ident) : TermElabM Term := do
-  let e ← Term.elabTerm (← `(GaudisCrypt.ProcedureWithHoles.signature $procId)) none
-  Term.synthesizeSyntheticMVarsNoPostponing
-  PrettyPrinter.delab (← whnf (← instantiateMVars e))
+def procSig (P : LeanParams) (procRef : Term) : TermElabM Term :=
+  P.withBinders do
+    let e ← Term.elabTerm (← `(GaudisCrypt.ProcedureWithHoles.signature $procRef)) none
+    Term.synthesizeSyntheticMVarsNoPostponing
+    PrettyPrinter.delab (← whnf (← instantiateMVars e))
 
 /-- Type-check a procedure body with the module parameters in the local context and the *real*
 callees in place (each hole callee ascribed to `Module (.proc ?_holeSigᵢ)`), and return, for each
@@ -751,9 +937,9 @@ read back as a `ModuleExpression` over the parameters (which appear in it as `pa
 
 Holes are made only afterwards, from these signatures — so a call is typed exactly as written
 before it loses its callee. -/
-def checkBody (paramBs : List (Ident × Term)) (callees : Array Term)
+def checkBody (P : LeanParams) (paramBs : List (Ident × Term)) (callees : Array Term)
     (body : Term) : TermElabM (Array (Array Term × Term) × Array Term) :=
-  withParams paramBs fun fvars => do
+  P.withBinders <| withParams paramBs fun fvars => do
     -- create the `?_holeSigᵢ` up front: `elabSyntheticHole` reuses a metavariable of that name
     let mvars ← (Array.range callees.size).mapM fun i =>
       mkFreshExprMVar (Lean.mkConst ``GaudisCrypt.ProcedureSignature)
@@ -776,6 +962,8 @@ structure ProcResult where
   fn : Ident
   /-- The constant just declared: `X.<f>.procedure`. -/
   declId : Ident
+  /-- The same constant, with the Lean parameters applied — how everything else refers to it. -/
+  declRef : Term
   /-- The positions (in the module's parameter list) of the parameters this procedure uses,
   in declaration order. -/
   usedPos : Array Nat
@@ -791,8 +979,9 @@ structure ProcResult where
 
 /-- Declare `X.<f>.procedure` for one `proc f (…) : R { … }` of a `module X (…)` declaration.
 Returns `none` if the body does not type-check (the errors have then been reported already). -/
-def elabProcedure (nm : Ident) (paramBs : Array (Ident × Term))
+def elabProcedure (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term))
     (p : TSyntax `gaudi_module_proc) : CommandElabM (Option ProcResult) := do
+  let bs := P.binders
   let `(gaudi_module_proc| proc $fn:ident ( $ps:proc_binder,* ) $[: $rty:term]? {
           $[var $locals:proc_binder,* ;]*
           $stmts:gaudi_stmt*
@@ -824,7 +1013,7 @@ def elabProcedure (nm : Ident) (paramBs : Array (Ident × Term))
     callees.any fun c => mentions [paramBs[i]!.1.getId] c.raw
   let errsBefore := errorCount (← get).messages
   let (holeSigs, calleeExprs) ←
-    runTermElabM fun _ => checkBody paramBs.toList callees checkTerm
+    runTermElabM fun _ => checkBody P paramBs.toList callees checkTerm
   -- a body that does not type-check has already been reported against its real callees;
   -- elaborating the hole version too would only duplicate the errors
   if errorCount (← get).messages > errsBefore then return none
@@ -833,7 +1022,8 @@ def elabProcedure (nm : Ident) (paramBs : Array (Ident × Term))
     `(hole_binder| $(holeIdent i):ident : ( $hps,* ) → $hret)
   let procTerm ← mkProc (holeStmts.map (⟨·⟩)) (some holeBinders)
   let declId := mkIdent (nm.getId ++ fn.getId ++ `procedure)
-  elabCommand (← `(command| noncomputable def $declId:ident := $procTerm))
+  elabCommand (← `(command| noncomputable def $declId:ident $bs* := $procTerm))
+  let declRef ← P.ref declId
   -- pass 3: the same body once more, with each hole call `call args ‹its index›` instead — the
   -- right-hand side of `X.<f>.procedure.apply_simp`
   let argsId := mkIdent `args
@@ -849,11 +1039,12 @@ def elabProcedure (nm : Ident) (paramBs : Array (Ident × Term))
   for (hps, hret) in holeSigs do
     hCtx ← `(GaudisCrypt.HoleSigs.append $hCtx (procsig ( $hps,* ) -> $hret))
   let instThmId := mkIdent (declId.getId ++ `apply_simp)
-  elabCommand (← `(command| @[simp] theorem $instThmId:ident :
+  elabCommand (← `(command| @[simp] theorem $instThmId:ident $bs* :
     ($argsId : GaudisCrypt.HoleSigs.Instantiation $hCtx) →
-      GaudisCrypt.ProcedureWithHoles.instantiate $declId $argsId = $instTerm :=
+      GaudisCrypt.ProcedureWithHoles.instantiate $declRef $argsId = $instTerm :=
     fun $argsId => rfl))
-  return some { fn, declId, usedPos, calleeExprs, callees := callees.map (⟨·⟩), instThmId }
+  return some { fn, declId, declRef, usedPos, calleeExprs, callees := callees.map (⟨·⟩),
+                instThmId }
 
 /-- The `ModuleExpression` of the procedure `r`, with `subst[i]` put for the module parameter
 declared at position `i`: either the closed `Module.proc X.<f>.procedure`, or
@@ -862,13 +1053,13 @@ right-nested and *reversed*, matching `HoleSigs.toModuleTypeRepTuple` (the last-
 the outermost `.fst`). -/
 def procApplied (r : ProcResult) (subst : Array Term) : CommandElabM Term := do
   if r.calleeExprs.isEmpty then
-    `(GaudisCrypt.Module.expression (GaudisCrypt.Module.proc $(r.declId)))
+    `(GaudisCrypt.Module.expression (GaudisCrypt.Module.proc $(r.declRef)))
   else
     let mut tuple ← `(GaudisCrypt.ModuleExpression.unit)
     for c in r.calleeExprs do
       tuple ← `(GaudisCrypt.ModuleExpression.pair $(⟨substParams subst c⟩) $tuple)
     `(GaudisCrypt.ModuleExpression.app
-        (GaudisCrypt.Module.expression (GaudisCrypt.Module.procWithHoles $(r.declId))) $tuple)
+        (GaudisCrypt.Module.expression (GaudisCrypt.Module.procWithHoles $(r.declRef))) $tuple)
 
 /-- The constant `X.<f>` that `elabProcModule` declares for the procedure `r` of `module X`. -/
 def procModId (nm : Ident) (r : ProcResult) : Ident := mkIdent (nm.getId ++ r.fn.getId)
@@ -877,14 +1068,15 @@ def procModId (nm : Ident) (r : ProcResult) : Ident := mkIdent (nm.getId ++ r.fn
 `Module.proc X.<f>.procedure` (no module parameter used), or `procApplied` abstracted over the
 parameters it does use, of type `Module.Arr T₁ (… (Module.Arr Tₖ (Module.Proc sig)))`.  Returns
 the constant it declared. -/
-def elabProcModule (nm : Ident) (paramBs : Array (Ident × Term)) (r : ProcResult) :
-    CommandElabM Ident := do
+def elabProcModule (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term))
+    (r : ProcResult) : CommandElabM Ident := do
+  let bs := P.binders
   let modId := procModId nm r
   if r.calleeExprs.isEmpty then
-    elabCommand (← `(command| noncomputable def $modId:ident :=
-      GaudisCrypt.Module.proc $(r.declId)))
+    elabCommand (← `(command| noncomputable def $modId:ident $bs* :=
+      GaudisCrypt.Module.proc $(r.declRef)))
   else
-    let mut ty ← `(GaudisCrypt.Module.Proc $(← runTermElabM fun _ => procSig r.declId))
+    let mut ty ← `(GaudisCrypt.Module.Proc $(← runTermElabM fun _ => procSig P r.declRef))
     for i in r.usedPos.reverse do ty ← `(GaudisCrypt.Module.Arr $(paramBs[i]!.2) $ty)
     -- the `j`-th used parameter is `.var (k-1-j)`: the first one is the outermost binder.  A
     -- parameter outside `usedPos` does not occur, so what it maps to is immaterial.
@@ -895,7 +1087,7 @@ def elabProcModule (nm : Ident) (paramBs : Array (Ident × Term)) (r : ProcResul
       | none => paramPlaceholder i
     let mut body ← procApplied r subst
     for _ in r.usedPos do body ← `(GaudisCrypt.ModuleExpression.abs $body)
-    elabCommand (← `(command| noncomputable def $modId:ident : $ty :=
+    elabCommand (← `(command| noncomputable def $modId:ident $bs* : $ty :=
       GaudisCrypt.ModuleExpression.toModule (m := $body)))
   return modId
 
@@ -916,27 +1108,29 @@ A procedure with no holes uses no parameter either (a hole is exactly a call to 
 one), and `X.<f>` is then `Module.proc X.<f>.procedure` by definition — the lemma says just that.
 
 Proved by the `proc_apply` tactic. -/
-def elabProcApplySimp (nm : Ident) (paramBs : Array (Ident × Term)) (r : ProcResult) :
-    CommandElabM Ident := do
+def elabProcApplySimp (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term))
+    (r : ProcResult) : CommandElabM Ident := do
+  let bs := P.binders
   let modId := procModId nm r
+  let modRef ← P.ref modId
   let thmId := mkIdent (modId.getId ++ `apply_simp)
   if r.callees.isEmpty then
-    elabCommand (← `(command| @[simp] theorem $thmId:ident :
-      $modId = GaudisCrypt.Module.proc $(r.declId) := rfl))
+    elabCommand (← `(command| @[simp] theorem $thmId:ident $bs* :
+      $modRef = GaudisCrypt.Module.proc $(r.declRef) := rfl))
     return thmId
   let mut inst ← `(GaudisCrypt.HoleSigs.Instantiation.nil)
   for c in r.callees do
     inst ← `(GaudisCrypt.HoleSigs.Instantiation.push $inst (GaudisCrypt.Module.Proc.procedure $c))
-  let mut lhs : Term := modId
+  let mut lhs : Term := modRef
   for i in r.usedPos do lhs ← `(GaudisCrypt.Module.app $lhs $(paramBs[i]!.1))
   -- the statement, as a `(x : T) → …` chain (there is no binder syntax to splice into a `theorem`)
   let mut stmt ← `($lhs = GaudisCrypt.Module.proc
-    (GaudisCrypt.ProcedureWithHoles.instantiate $(r.declId) $inst))
+    (GaudisCrypt.ProcedureWithHoles.instantiate $(r.declRef) $inst))
   for i in [0 : r.usedPos.size] do
     let (x, ty) := paramBs[r.usedPos[r.usedPos.size - 1 - i]!]!
     stmt ← `(($x : $ty) → $stmt)
   let ids := r.usedPos.map (paramBs[·]!.1)
-  elabCommand (← `(command| @[simp] theorem $thmId:ident : $stmt := by
+  elabCommand (← `(command| @[simp] theorem $thmId:ident $bs* : $stmt := by
     intro $ids*
     proc_apply $modId))
   return thmId
@@ -987,21 +1181,22 @@ theorem X.apply_simp (A : T₁) … (Z : Tₙ) :
 list the tuple is the only argument `X` can take, a variable of `Module.Unit`.
 
 Proved by the `module_apply` tactic, which normalises both sides. -/
-def elabApplySimp (nm : Ident) (paramBs : Array (Ident × Term))
+def elabApplySimp (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term))
     (mkId? : Option Ident) (procs : Array ProcResult) : CommandElabM Ident := do
+  let bs := P.binders
   let n := paramBs.size
   let tId := mkIdent `t
   -- the record of the procedures, each applied to the arguments at its `usedPos`
   let paramTerms : Array Term := paramBs.map fun b => b.1
   let rhs ← mkRecord mkId? procs (← procs.mapM fun r => do
-    let mut e : Term := procModId nm r
+    let mut e : Term ← P.ref (procModId nm r)
     for i in r.usedPos do e ← `(GaudisCrypt.Module.app $e $(paramTerms[i]!))
     pure e)
   let argTuple : Term ←
     if n == 0 then pure (tId : Term)
     else rightNest (fun a b => `(GaudisCrypt.Module.pair $a $b)) paramTerms
   -- the statement, as a `(x : T) → …` chain (there is no binder syntax to splice into a `theorem`)
-  let mut stmt ← `(GaudisCrypt.Module.app $nm $argTuple = $rhs)
+  let mut stmt ← `(GaudisCrypt.Module.app $(← P.ref nm) $argTuple = $rhs)
   if n == 0 then
     stmt ← `(($tId : GaudisCrypt.Module.Unit) → $stmt)
   else
@@ -1010,7 +1205,7 @@ def elabApplySimp (nm : Ident) (paramBs : Array (Ident × Term))
       stmt ← `(($x : $ty) → $stmt)
   let ids := if n == 0 then #[tId] else paramBs.map (·.1)
   let thmId := mkIdent (nm.getId ++ `apply_simp)
-  elabCommand (← `(command| @[simp] theorem $thmId:ident : $stmt := by
+  elabCommand (← `(command| @[simp] theorem $thmId:ident $bs* : $stmt := by
     intro $ids*
     module_apply $nm))
   return thmId
@@ -1036,9 +1231,10 @@ With a parameter list `X` also gets the `@[simp]` lemma `X.apply_simp` for apply
 
 Declares nothing (and returns `#[]`) if the declaration has no procedures.  The result lists what
 was declared, for `logDeclared`. -/
-def elabModule (nm : Ident) (params? : Option (Array (Ident × Term))) (mt? : Option Term)
-    (procs : Array ProcResult) : CommandElabM (Array (Name × String)) := do
+def elabModule (nm : Ident) (P : LeanParams) (params? : Option (Array (Ident × Term)))
+    (mt? : Option Term) (procs : Array ProcResult) : CommandElabM (Array (Name × String)) := do
   if procs.isEmpty then return #[]
+  let bs := P.binders
   let paramBs := params?.getD #[]
   let n := paramBs.size
   let prod := fun (a b : Term) => `(GaudisCrypt.Module.Prod $a $b)
@@ -1046,15 +1242,15 @@ def elabModule (nm : Ident) (params? : Option (Array (Ident × Term))) (mt? : Op
   let mt ← match mt? with
     | some mt => pure mt
     | none => rightNest prod (← procs.mapM fun r => do
-        `(GaudisCrypt.Module.Proc $(← runTermElabM fun _ => procSig r.declId)))
+        `(GaudisCrypt.Module.Proc $(← runTermElabM fun _ => procSig P r.declRef)))
   let paramProd ←
     if n == 0 then `(GaudisCrypt.Module.Unit) else rightNest prod (paramBs.map (·.2))
   let ty ← match params? with
     | none => pure mt
     | some _ => `(GaudisCrypt.Module.Arr $paramProd $mt)
   if params?.isNone then
-    let body ← mkRecord mkId? procs (procs.map fun r => procModId nm r)
-    elabCommand (← `(command| noncomputable def $nm:ident : $ty := $body))
+    let body ← mkRecord mkId? procs (← procs.mapM fun r => P.ref (procModId nm r))
+    elabCommand (← `(command| noncomputable def $nm:ident $bs* : $ty := $body))
     return #[(nm.getId, "the module itself")]
   -- the parameter at position `i` is the `i`-th component of the argument tuple `.var 0`
   let subst ← (Array.range n).mapM fun i => do
@@ -1065,23 +1261,25 @@ def elabModule (nm : Ident) (params? : Option (Array (Ident × Term))) (mt? : Op
   -- each field is the already-declared `X.<f>`, applied to the parameters that `f` uses (in
   -- declaration order, the order `elabProcModule` abstracted them in)
   let fields ← procs.mapM fun r => do
-    let mut e ← `(GaudisCrypt.Module.expression $(procModId nm r))
+    let mut e ← `(GaudisCrypt.Module.expression $(← P.ref (procModId nm r)))
     for i in r.usedPos do e ← `(GaudisCrypt.ModuleExpression.app $e $(subst[i]!))
     pure e
   let mut body ← rightNest (fun a b => `(GaudisCrypt.ModuleExpression.pair $a $b)) fields
   if params?.isSome then body ← `(GaudisCrypt.ModuleExpression.abs $body)
-  elabCommand (← `(command| noncomputable def $nm:ident : $ty :=
+  elabCommand (← `(command| noncomputable def $nm:ident $bs* : $ty :=
     GaudisCrypt.ModuleExpression.toModule (m := $body)))
-  let thmId ← elabApplySimp nm paramBs mkId? procs
+  let thmId ← elabApplySimp nm P paramBs mkId? procs
   return #[(nm.getId, "the module itself"), (thmId.getId, "applying it to its parameters")]
 
 end GaudisCrypt.ModuleDecl
 
 open Lean Elab Command GaudisCrypt.ModuleDecl in
 elab_rules : command
-  | `(module $nm:ident $[( $params:proc_binder,* )]? $[: $mt:term]? {
+  | `(module $nm:ident $lps:gaudi_param* $[using ( $params:proc_binder,* )]? $[: $mt:term]? {
         $procs:gaudi_module_proc*
       }) => do
+    let P ← nameParams (← paramBinders "module" lps)
+    if params.isNone then warnModuleTypedParam P
     let paramBs? ← params.mapM fun ps => ps.getElems.mapM fun b => match b with
       | `(proc_binder| $id:ident : $ty:term) => pure (id, ty)
       | _ => throwUnsupportedSyntax
@@ -1089,22 +1287,22 @@ elab_rules : command
     let mut declared : Array (Name × String) := #[]
     let mut results : Array ProcResult := #[]
     for p in procs do
-      let some r ← elabProcedure nm paramBs p | continue
+      let some r ← elabProcedure nm P paramBs p | continue
       results := results.push r
       -- the short names: the `#check`s are inserted right after the command, in the same namespace
       declared := declared.push (r.declId.getId, s!"body of proc {r.fn.getId}")
       declared := declared.push (r.instThmId.getId,
         s!"instantiating the holes of proc {r.fn.getId}")
-      let modId ← elabProcModule nm paramBs r
+      let modId ← elabProcModule nm P paramBs r
       let used := ", ".intercalate (r.usedPos.toList.map (paramBs[·]!.1.getId.toString))
       declared := declared.push (modId.getId,
         if r.usedPos.isEmpty then s!"proc {r.fn.getId} as a module"
         else s!"proc {r.fn.getId} as a module, in {used}")
-      let procThmId ← elabProcApplySimp nm paramBs r
+      let procThmId ← elabProcApplySimp nm P paramBs r
       declared := declared.push (procThmId.getId,
         if r.usedPos.isEmpty then s!"proc {r.fn.getId} as the procedure itself"
         else s!"applying proc {r.fn.getId} to {used}")
     -- `X` itself — only when every procedure made it (a missing field would not type-check)
     if results.size == procs.size then
-      declared := declared ++ (← elabModule nm paramBs? mt results)
+      declared := declared ++ (← elabModule nm P paramBs? mt results)
     logDeclared (← getRef) declared

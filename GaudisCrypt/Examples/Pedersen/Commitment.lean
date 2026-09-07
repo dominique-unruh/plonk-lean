@@ -72,6 +72,14 @@ class CommitmentTypes where
 -- wrong to call it inherent.  Cost of doing it: the two command fixes above, plus writing
 -- `types.Value` instead of `Value` everywhere (the `open CommitmentTypes (Value …)` shorthand
 -- goes away).  That is a `Language/Syntax2.lean` change, i.e. Dominique's call.
+--
+-- Update 2026-09-07: (1) is gone, for the *parameter* spelling.  Both commands now take Lean
+-- parameters and thread them through their own cross-references, so
+--     moduletype Scheme (types : CTypes) { proc gen () -> (types.Value); … }
+--     module Corr (types : CTypes) using (S : Scheme types) { … }
+-- elaborates as it stands (checked).  A `variable (types : CommitmentTypes)` in the section is
+-- still not enough — auto-included section variables are not auto-applied to a bare reference —
+-- so the switch means writing `(types : CommitmentTypes)` on each command, not once per section.
 
 /- DON'T DO:
 
@@ -95,55 +103,10 @@ sorry
 -/
 
 
-/-
-
-module type T {t} (x:Nat) ...
-
-module T {t} (x) using (B:Module) : ... {...}
-
-module  {t} (x): T (B:Module) : ... {...}
-
-module Correctness using (S:CommitmentScheme) : @T Nat 17 {...}
-
-module Correctness (S:CommitmentScheme) : @T Nat 17 {...}
-
-module A [{t} (x:Nat) (C:Module)] (B:Module ...) : @T Nat 17 {...}
-
-module {params : X} A (C : Module ...) : @T Nat 17 {...}
-
-module A (C : Module ...) using (params : ZZ) : @T Nat 17 {...}
-
-module A (params : ZZ) [C : Module ...]  : @T Nat 17 {...}
-
-module A params (moduleparameters)
-
-Rules:
-- if nothing behind A: clear.
-- if something behind A, last thing in parens with commans (tuple) -> last is module params
-- if something behind A, last thing not in parents -> no module params
-- if word `using` in between -> module params are after `using`
-- something behind A, last thing in parens -> heuristic:
-  - if argument has IsModule instance, module param
-  - else not
-
-Alternative:
-- module A (moduleparamsters)
-- module A params using (moduleparameters)
-- module A
-- module A params using
-
-Alternative:
-- module A params using (moduleparameters)
-- module A using (moduleparameters)
-- module A
-- module A params
-  - if last param is (...), and tuple (has comma) -> syntax error but with hint: "maybe you meant to use `using`"
-  - if last param is (x:T) and `IsModule T` -> warning: "maybe you meant to use `using`"
-    can be disabled by linter exception options
-
--/
-
-def f (x y : Nat) : Nat := x + y
+/- Done (`ModuleSyntax.lean`): both commands take Lean parameters between the name and the rest of
+the header, the module parameters have moved behind `using`, a comma-separated group in the Lean
+parameters is an error naming `using`, and a single module-typed one is the
+`linter.gaudisCrypt.using` warning. -/
 
 instance [CommitmentTypes] : Inhabited CommitmentTypes.Value :=
   CommitmentTypes.value_inhabited
@@ -195,7 +158,7 @@ example : CommitmentScheme = Module CommitmentScheme.typeRep := rfl
 
 
 
-module Correctness (S : CommitmentScheme) {
+module Correctness using (S : CommitmentScheme) {
   proc main(m : Message) : Bool {
     var x : Value;
     var c : Commitment;
@@ -230,7 +193,7 @@ Two module parameters, so `HidingExperiment` is a functor of the *pair* and each
 functor of the parameters it uses (both, here).  `{0,1}` is `SubProbability.uniform` at `Bool`.
 
 `(m0, m1)` and `(c, d)` are tuple assignments, one local per component, as in EC. -/
-module HidingExperiment (S : CommitmentScheme, U : Unhider) {
+module HidingExperiment using (S : CommitmentScheme, U : Unhider) {
   proc main() : Bool {
     var x : Value;
     var m0 : Message;
@@ -275,7 +238,7 @@ module BindingExperiment (S:CommitmentScheme, B:Binder) = {
 `Binder.bind` returns `commitment * message * openingkey * message * openingkey`, taken apart
 by a five-wide tuple assignment — note `verify` takes the components in the order
 `(x, m, c, d)`, not the order they arrive in. -/
-module BindingExperiment (S : CommitmentScheme, B : Binder) {
+module BindingExperiment using (S : CommitmentScheme, B : Binder) {
   proc main() : Bool {
     var x : Value;
     var c : Commitment;
