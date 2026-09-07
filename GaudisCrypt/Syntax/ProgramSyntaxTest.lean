@@ -432,4 +432,21 @@ set_option pp.notation false in
 set_option pp.explicit true in
 #check (GaudiProg[ skip; ] : Stmt Unit)
 
+-- `pp.gaudisCrypt false` steps aside too, but only these delaborators: Lean's own notation
+-- is untouched, so the `locals` list still prints as `[…]` and not as `List.cons … List.nil`.
+/--
+info: { locals := [⟨ℕ, inferInstance⟩],
+  body :=
+    let x := Lens.id.intoParams;
+    let u := Lens.id.intoVars;
+    StmtWithHoles.assign (liftLens u) { get := fun st ↦ §x },
+  return_val :=
+    let x := Lens.id.intoParams;
+    let u := Lens.id.intoVars;
+    { get := fun st ↦ §u } } : proctype (ℕ) -> ℕ
+-/
+#guard_msgs in
+set_option pp.gaudisCrypt false in
+#check (proc (x : Nat) : Nat { var u : Nat; u <- $x; return $u })
+
 end GaudisCrypt.ProgTest

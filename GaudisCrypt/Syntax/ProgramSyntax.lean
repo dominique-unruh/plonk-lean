@@ -541,7 +541,14 @@ the two places where the printed form deviates from what one would write by hand
 Whenever a term does not fit the surface syntax — a `Getter` that is not of the shape
 `GaudiExpr[ ]` builds, an l-value that is not a lifted lens, `let`s that `proc` would not
 have generated — the delaborators fail and Lean falls back to its default output.  They also
-step aside under `pp.explicit` and `set_option pp.notation false`. -/
+step aside under `pp.explicit` and `set_option pp.notation false`, and under the dedicated
+`set_option pp.gaudisCrypt false`, which switches *only* them off and leaves the rest of
+Lean's notation alone — the way to look at the underlying term.
+
+`pp.gaudisCrypt` reaches the delaborators above but not the `app_unexpander`s further up this
+file (`proctype`/`procsig`, `Procedure`): `UnexpandM` is `ReaderT Syntax (EStateM Unit Unit)`
+and carries no `Options`, so an unexpander cannot consult one.  Those still print the *type*
+as `proctype (…) -> R` under `pp.gaudisCrypt false`; `pp.notation false` turns them off. -/
 
 section Printing
 open Lean PrettyPrinter Delaborator SubExpr
@@ -554,8 +561,20 @@ private partial def syntaxHasIdent (n : Name) : Syntax → Bool
   | .node _ _ args => args.any (syntaxHasIdent n)
   | _ => false
 
-/-- Surface syntax is printed only when Lean is printing readably. -/
+register_option pp.gaudisCrypt : Bool := {
+  defValue := true
+  descr := "(pretty printer) print GaudisCrypt statements and procedures in their surface \
+syntax (`GaudiProg[ … ]`, `proc … { … }`).  Turn off to see the underlying term while \
+keeping the rest of Lean's notation."
+}
+
+private def getPPGaudisCrypt (o : Options) : Bool :=
+  o.get pp.gaudisCrypt.name pp.gaudisCrypt.defValue
+
+/-- Surface syntax is printed only when Lean is printing readably, and only while
+`pp.gaudisCrypt` is on. -/
 private def guardSurfaceSyntax : DelabM Unit := do
+  guard (← getPPOption getPPGaudisCrypt)
   guard (← getPPOption getPPNotation)
   guard <| !(← getPPOption getPPExplicit)
 
