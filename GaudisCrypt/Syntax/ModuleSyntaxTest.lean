@@ -400,6 +400,44 @@ module UsesThemToo (args : Nat) using (S : OneField) {
 }
 #check (UsesThemToo : (args : Nat) → Module.Arr OneField (Module.Proc (procsig () -> Bool)))
 
+/- ### Section variables
+
+A Lean parameter may come from a section `variable`, and is then not written on the declaration at
+all: one a declaration mentions anywhere — a field type, a procedure body, the type of a module
+parameter — becomes a parameter of it, in front of the ones it does write, together with the
+instance variables that are about it.  A variable it does not mention stays out, and so does one
+whose name it binds itself. -/
+section
+variable {α : Type} [Inhabited α] (k : Nat) (untouched : Bool)
+
+moduletype Boxed {
+  proc gen () -> α;
+  proc use (α) -> (Fin (k+1));
+}
+-- `α` and `k` are mentioned, `[Inhabited α]` comes along with `α`, `untouched` stays out
+#check (Boxed.typeRep : {α : Type} → [Inhabited α] → (k : Nat) → ModuleTypeRep)
+
+module Unbox using (S : Boxed (α := α) k) {
+  proc main() : (Fin (k+1)) {
+    var x : α;
+    var i : Fin (k+1);
+    x <- call S.gen ();
+    i <- call S.use ($x);
+    return $i
+  };
+}
+#check (Unbox : {α : Type} → [Inhabited α] → (k : Nat) →
+  Module.Arr (Boxed (α := α) k) (Module.Proc (procsig () -> (Fin (k+1)))))
+
+-- a written binder wins over the section variable of the same name: one `k`, not two
+moduletype Shadow (k : Nat) {
+  proc gen () -> (Fin (k+1));
+  proc use (Fin (k+1)) -> Bool;
+}
+#check (Shadow.typeRep : (k : Nat) → ModuleTypeRep)
+
+end
+
 /- ### A parameterised `moduletype` as a declared type
 
 `module X … : T` builds the record of its procedures with `T.mk { f₁ := …, … }` when `T` is a

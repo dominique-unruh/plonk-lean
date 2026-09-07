@@ -7,8 +7,8 @@ A transliteration of EasyCrypt's `theories/crypto/Commitment.ec` (theory
 `CommitmentProtocol`) into the Gaudí module/procedure syntax.
 
 * EC's abstract theory types `value`, `message`, `commitment`, `openingkey` become the fields of
-  the structure `CommitmentTypes`, passed as an explicit Lean parameter `(types : CommitmentTypes)`
-  to every `moduletype` and `module` that mentions one of them.
+  the structure `CommitmentTypes`, declared here as a section `variable (types : CommitmentTypes)`
+  and hence a Lean parameter of every `moduletype` and `module` below that mentions one of them.
 * EC `module type`s become `moduletype`s.
 * EC's parameterized modules (`Correctness(S)`, `HidingExperiment(S,U)`,
   `BindingExperiment(S,B)`) become `module X … using (P : T) { … }` declarations: the calls are
@@ -43,6 +43,8 @@ structure CommitmentTypes where
 
 variable [ProgramSpec]
 
+variable (types : CommitmentTypes)
+
 /-! ## Module types
 
 ```
@@ -53,25 +55,25 @@ module type CommitmentScheme = {
 }.
 ``` -/
 
-moduletype CommitmentScheme (types : CommitmentTypes) {
+moduletype CommitmentScheme {
   proc gen () -> (types.Value);
   proc commit (types.Value, types.Message) -> types.Commitment × types.OpeningKey;
   proc verify (types.Value, types.Message, types.Commitment, types.OpeningKey) -> Bool;
 }
 
 -- EC's `Unhider`: the hiding-game adversary.
-moduletype Unhider (types : CommitmentTypes) {
+moduletype Unhider {
   proc choose (types.Value) -> types.Message × types.Message;
   proc guess (types.Commitment) -> Bool;
 }
 
 -- EC's `Binder`: the binding-game adversary.
-moduletype Binder (types : CommitmentTypes) {
+moduletype Binder {
   proc bind (types.Value) ->
     types.Commitment × types.Message × types.OpeningKey × types.Message × types.OpeningKey;
 }
 
-module Correctness (types : CommitmentTypes) using (S : CommitmentScheme types) {
+module Correctness using (S : CommitmentScheme types) {
   proc main(m : types.Message) : Bool {
     var x : types.Value;
     var c : types.Commitment, d : types.OpeningKey;
@@ -100,8 +102,7 @@ Two module parameters, so `HidingExperiment` is a functor of the *pair* and each
 functor of the parameters it uses (both, here).  `{0,1}` is `SubProbability.uniform` at `Bool`.
 
 `(m0, m1)` and `(c, d)` are tuple assignments, one local per component, as in EC. -/
-module HidingExperiment (types : CommitmentTypes)
-    using (S : CommitmentScheme types, U : Unhider types) {
+module HidingExperiment using (S : CommitmentScheme types, U : Unhider types) {
   proc main() : Bool {
     var x : types.Value;
     var m0 m1 : types.Message;
@@ -136,8 +137,7 @@ This is also the one place a *message comparison* is needed (`m <> m'`).  Rather
 `DecidableEq` field on `CommitmentTypes`, it is supplied classically right where it is used, by
 a `have` in the body: the program is never executed, so the comparison only has to denote a
 `Bool`.  The `have` scopes over the `return` too, which is where the comparison sits. -/
-module BindingExperiment (types : CommitmentTypes)
-    using (S : CommitmentScheme types, B : Binder types) {
+module BindingExperiment using (S : CommitmentScheme types, B : Binder types) {
   proc main() : Bool {
     var x : types.Value, c : types.Commitment;
     var m m' : types.Message;

@@ -174,6 +174,21 @@ generated declaration makes to another passes them along by name (`X.typeRep (n 
 implicit and instance parameters travel too).  That is the whole of the semantics: a parameterised
 declaration is the declaration it would be with those binders written on it by hand.
 
+A parameter may also come from a section `variable`, and then need not be written at all:
+```
+variable (n : Nat)
+
+moduletype Sized { proc f (Fin n) -> Bool; }
+module Twice using (S : Sized n) { … }
+```
+means the same as the pair above.  A section variable the declaration mentions anywhere — in a
+field type, in a procedure body, in a module parameter's type — becomes a Lean parameter of it,
+in front of the ones it writes itself, together with the variables it depends on and the instance
+variables that are about them (`variable {α} [Inhabited α]`; using `α` brings the instance too).
+Lean's own auto-inclusion is left the variables no declaration of the batch mentions,
+`[ProgramSpec]` and its like: it works per declaration, by use, and the generated declarations of
+one command refer to one another and so all have to take the same parameters.
+
 The *module* parameters are a different thing and are now written after `using`.  They used to be
 written in the same position as the Lean parameters are, and they look like a Lean binder list
 that got a comma in it — which is not valid Lean binder syntax.  Rather than let that fail in the
@@ -281,6 +296,53 @@ def nameParams (bs : Array (TSyntax ``Lean.Parser.Term.bracketedBinder)) :
     else
       throwErrorAt b "module: unsupported parameter binder"
   return { binders := out, args }
+
+/-- Does `s` mention one of the identifiers `names`?  A name also counts as mentioned when it heads
+a field access (`types.Value` is one identifier, not two). -/
+partial def mentions (names : List Name) (s : Syntax) : Bool :=
+  if s.isIdent then names.any fun n => n == s.getId || n.isPrefixOf s.getId
+  else s.getArgs.any (mentions names)
+
+/-- The section variables (`variable (types : CommitmentTypes)`) that a declaration written as
+`stx` uses, to go in front of the parameters `own` it writes itself: the ones whose names `stx`
+mentions, the ones those in turn mention, and the instance variables among them that are about
+variables already taken.  A variable whose name `own` binds is left alone — the written binder
+wins.
+
+The section variables a declaration uses have to *become* Lean parameters of it rather than be
+left to Lean's own auto-inclusion, because a `module`/`moduletype` is a batch of declarations that
+refer to one another by name (`X.typeRep (types := types)`): auto-inclusion puts a variable only
+in those declarations whose body happens to mention it, and a reference from one of the batch to
+another would then be missing an argument.  Only the variables that no declaration of the batch
+takes a stand on — `[ProgramSpec]` and its like, mentioned by none of them — are left to it. -/
+def sectionBinders (stx : Syntax) (own : Array (TSyntax ``Lean.Parser.Term.bracketedBinder)) :
+    CommandElabM (Array (TSyntax ``Lean.Parser.Term.bracketedBinder)) := do
+  let vars := (← getScope).varDecls
+  if vars.isEmpty then return #[]
+  let ownNames ← own.flatMapM fun b => getBracketedBinderIds b.raw
+  -- what each section binder declares, without the anonymous positions (`[Inhabited α]`) and
+  -- without the names the declaration binds itself
+  let names ← vars.mapM fun b => return (← getBracketedBinderIds b.raw).toList.filter fun n =>
+    n != .anonymous && !ownNames.contains n
+  let mut used := vars.map fun _ => false
+  for i in [0 : vars.size] do
+    if !names[i]!.isEmpty && mentions names[i]! stx then used := used.set! i true
+  -- a used variable drags in the ones its own type mentions, and an instance variable comes along
+  -- with the variables it is about; either can uncover more, hence the fixpoint
+  for _ in [0 : vars.size] do
+    let mut changed := false
+    for i in [0 : vars.size] do
+      let isInst := vars[i]!.raw.getKind == ``Lean.Parser.Term.instBinder
+      for j in [0 : vars.size] do
+        if i == j || names[j]!.isEmpty || !mentions names[j]! vars[i]!.raw then continue
+        if used[i]! && !used[j]! then
+          used := used.set! j true
+          changed := true
+        if used[j]! && !used[i]! && isInst then
+          used := used.set! i true
+          changed := true
+    unless changed do break
+  return (Array.range vars.size).filterMap fun i => if used[i]! then some vars[i]! else none
 
 /-- How a generated declaration refers to another one: bare when there are no parameters, and
 `X.f (a₁ := a₁) … (aₙ := aₙ)` when there are.  *Named* arguments, not `@`: `@` would also expose
@@ -418,7 +480,8 @@ elab_rules : command
   | `(moduletype $nm:ident $params:gaudi_param* { $fields:moduletypeField* }) => do
       let n := fields.size
       if n == 0 then throwError "moduletype needs at least one field"
-      let P ← nameParams (← paramBinders "moduletype" params)
+      let ownBs ← paramBinders "moduletype" params
+      let P ← nameParams ((← sectionBinders (← getRef) ownBs) ++ ownBs)
       let bs := P.binders
       -- per field: the field name and its `ModuleTypeRep`
       let fns ← fields.mapM fun f => match f with
@@ -827,12 +890,6 @@ def binderNames (b : TSyntax `proc_binder) : Array Ident :=
   | `(proc_binder| $id:ident : $_:term) => #[id]
   | `(proc_binder| $id:ident $ids:ident* : $_:term) => #[id] ++ ids
   | _ => #[]
-
-/-- Does `s` mention one of the identifiers `names` (the module's parameters)?  A parameter also
-counts as mentioned when it heads a field access (`B.main` is one identifier, not two). -/
-partial def mentions (names : List Name) (s : Syntax) : Bool :=
-  if s.isIdent then names.any fun n => n == s.getId || n.isPrefixOf s.getId
-  else s.getArgs.any (mentions names)
 
 /-- Syntactic equality ignoring source positions — two calls of the same module argument
 should share a single hole. -/
@@ -1367,7 +1424,8 @@ elab_rules : command
   | `(module $nm:ident $lps:gaudi_param* $[using ( $params:proc_binder,* )]? $[: $mt:term]? {
         $procs:gaudi_module_proc*
       }) => do
-    let P ← nameParams (← paramBinders "module" lps)
+    let ownBs ← paramBinders "module" lps
+    let P ← nameParams ((← sectionBinders (← getRef) ownBs) ++ ownBs)
     if params.isNone then warnModuleTypedParam P
     -- as in `proc`, a binder may name several parameters of one module type
     let paramBs? ← params.mapM fun ps => return (← ps.getElems.mapM fun b => match b with
