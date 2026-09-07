@@ -63,6 +63,27 @@ typeclass resolution (`OfNat (paramListToTuple [Nat]) 5` for a numeral argument 
   | [x]     => x
   | x :: xs => x × paramListToTuple xs
 
+/-- The declared types of a local-variable list, i.e. `ls.map (·.fst)`.
+
+Spelled out by recursion rather than as `List.map` *because* it has to be reducible, for the
+same reason `paramListToTuple` is: `List.map` is not, so `paramListToTuple (ls.map (·.fst))`
+stays stuck at `reducible` transparency — `paramListToTuple` cannot match on an argument it
+cannot evaluate, and the tuple type never becomes a `_ × _` that instance search can use.
+With this, `disjoint` of two local-variable lenses is synthesized on its own. -/
+@[reducible] def localTypes : List (Σ t : Type, Inhabited t) → List Type
+  | []             => []
+  | ⟨t, _⟩ :: rest => t :: localTypes rest
+
+omit [ProgramSpec] in
+/-- `localTypes` is `List.map (·.fst)`, for interop with lemmas stated that way.  Deliberately
+*not* `@[simp]`: rewriting towards `List.map` puts back exactly the non-reducible head that
+`localTypes` exists to avoid. -/
+theorem localTypes_eq_map (ls : List (Σ t : Type, Inhabited t)) :
+    localTypes ls = ls.map (·.fst) := by
+  induction ls with
+  | nil => rfl
+  | cons h t ih => cases h; simp [localTypes, ih]
+
 /-- The local state of a procedure: parameter values (`params`) and local-variable
 values (`vars`).  Indexed by the parameter *types* and the local declarations only
 (not the return type), so it can be formed before the return type is known — this is
@@ -72,7 +93,7 @@ structure LocalVariableState (paramTypes : List Type)
     (locals : List (Σ t : Type, Inhabited t)) where
   params : paramListToTuple paramTypes
   -- TODO: rename vars to localVars
-  vars : paramListToTuple (locals.map (·.fst))
+  vars : paramListToTuple (localTypes locals)
 
 /-- The local state for a full signature (delegates to `LocalVariableState`; reducible
 so `sig.LocalVariableState locals` is defeq to `LocalVariableState sig.params locals`). -/
@@ -94,7 +115,7 @@ def LocalVariableState.paramsL {paramTypes : List Type}
 -- TODO Rename to .localVarsL
 def LocalVariableState.varsL {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)} :
-    Lens (paramListToTuple (locals.map (·.fst))) (LocalVariableState paramTypes locals) where
+    Lens (paramListToTuple (localTypes locals)) (LocalVariableState paramTypes locals) where
   get s := s.vars
   set v s := { s with vars := v }
   set_get _ _ := rfl
@@ -114,7 +135,7 @@ def Lens.intoParams {a : Type} {paramTypes : List Type}
 -- TODO: rename → intoLocalVars
 def Lens.intoVars {a : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
-    (lens : Lens a (paramListToTuple (locals.map (·.fst)))) :
+    (lens : Lens a (paramListToTuple (localTypes locals))) :
     Lens a (ProcedureState (LocalVariableState paramTypes locals)) :=
   ProcedureState.localL.chain (LocalVariableState.varsL.chain lens)
 
@@ -122,14 +143,15 @@ def Lens.intoVars {a : Type} {paramTypes : List Type}
     are disjoint, and `intoVars` (two `chain` layers) preserves that. -/
 instance Programs.disjoint_intoVars {a b : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
-    {x : Lens a (paramListToTuple (locals.map (·.fst)))}
-    {y : Lens b (paramListToTuple (locals.map (·.fst)))} [disjoint x y] :
+    {x : Lens a (paramListToTuple (localTypes locals))}
+    {y : Lens b (paramListToTuple (localTypes locals))} [disjoint x y] :
     disjoint (Lens.intoVars (paramTypes := paramTypes) x) y.intoVars :=
   Lens.disjoint_chain ProcedureState.localL _ _
 
 def ProcedureSignature.ParamType (sig : ProcedureSignature) := paramListToTuple sig.params
 
-private def localDefaults : (ls : List (Σ t : Type, Inhabited t)) → paramListToTuple (ls.map (·.fst))
+private def localDefaults : (ls : List (Σ t : Type, Inhabited t)) →
+    paramListToTuple (localTypes ls)
   | [] => ()
   | [⟨_, inst⟩] => inst.default
   | ⟨_, inst⟩ :: h :: t => (inst.default, localDefaults (h :: t))

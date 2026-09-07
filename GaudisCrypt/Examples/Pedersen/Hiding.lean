@@ -46,11 +46,8 @@ hand-inlined `ProgramDenotation`s (`realGame`/`fakeGame`), which left the final 
 nothing about `HidingExperiment` at all — the inlining was never justified against the module.
 That justification is now `hidingGame_inline`/`fakeGame_inline`.
 
-Deviations from EC, all forced and all local:
-
-* `(m0, m1) <@ U.choose(h)` becomes a pair-typed local `mm` — tuple assignment of locals does not
-  elaborate (the ⚠ note in `Commitment.lean`).  EC never reads `m0`/`m1` in `FakeCommit` anyway.
-* EC's `&m` (an initial memory) becomes an explicit `σ : State`.
+One deviation from EC, forced and local: EC's `&m` (an initial memory) becomes an explicit
+`σ : State`.
 
 `={glob U}` is *not* a deviation: it is `GlobEq` below, which is exactly EC's notion — see the
 comment there.
@@ -136,14 +133,15 @@ module FakeCommit (U : Unhider) {
   proc main() : Bool {
     var x : F;
     var h : G;
-    var mm : CommitmentTypes.Message × CommitmentTypes.Message;
+    var m0 : CommitmentTypes.Message;
+    var m1 : CommitmentTypes.Message;
     var b : Bool;
     var d : F;
     var c : G;
     var bg : Bool;
     x <$ SubProbability.uniform;
     h <- g ^ $x;
-    mm <- call U.choose ($h);
+    m0,m1 <- call U.choose ($h);
     b <$ SubProbability.uniform;
     d <$ SubProbability.uniform;
     c <- g ^ $d;
@@ -164,7 +162,8 @@ noncomputable abbrev fakeGame (U : Unhider) : procmod () -> Bool :=
 
 The `prhl2` rules consume `>>=`-chains, but a module procedure is a `procWrap` over a
 `programDenotation` on its own local-state type — and the two games do not even have the same
-locals (five against seven).  These two lemmas are EC's `inline*`: each game *as a module* equals
+locals (seven against eight, differently typed).  These two lemmas are EC's `inline*`: each
+game *as a module* equals
 a bind chain on `State`, with the adversary calls left as opaque denotations.  Proven by
 `SubProbability.ext_of_expected`, i.e. by checking the `wp` at an arbitrary postcondition, which
 is the same reduction `fakecommit_half` runs. -/
@@ -196,6 +195,8 @@ theorem fakeGame_inline (U : Unhider) :
     wp_uniform, wp_pure, uniform_expected, expected_pure,
     ProcedureSignature.localVariableInit,
     AsGetter.toG, AsSetter.toS, liftLens, LiftLens.lift,
+    -- `Lens.pair`: `m0,m1 <- call U.choose (…)` stores through a tuple l-value
+    Lens.pair,
     Lens.intoVars, Lens.chain, Lens.ofst, Lens.osnd,
     Lens.fst, Lens.snd, Lens.id, ProcedureState.localL, ProcedureState.globalL,
     LocalVariableState.varsL]
@@ -230,6 +231,8 @@ theorem hidingGame_inline (U : Unhider) :
     wp_uniform, wp_pure, uniform_expected,
     ProcedureSignature.localVariableInit,
     AsGetter.toG, AsSetter.toS, liftLens, LiftLens.lift,
+    -- `Lens.pair`: `m0,m1 <- …` and `c,d <- …` store through tuple l-values
+    Lens.pair,
     Lens.intoVars, Lens.chain, Lens.ofst, Lens.osnd,
     Lens.fst, Lens.snd, Lens.id, ProcedureState.localL, ProcedureState.globalL,
     LocalVariableState.varsL]

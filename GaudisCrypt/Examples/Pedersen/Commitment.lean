@@ -191,40 +191,36 @@ deriving that (`Lens.disjoint_ofst_osnd`, `Lens.disjoint_chain`, …) now live i
 `Language/Lens.lean` — the "move them to the proper place" TODO that used to sit here is done,
 and they are no longer declared in this file.
 
-⚠ They still do **not** fire *by themselves* for tuple assignment of *locals* (re-tested
-2026-09-07).  The cause is the type the two lenses live in: `paramListToTuple
-(locals.map (·.fst))`.  `paramListToTuple` is `@[reducible]`, but `List.map` is not, so at
-`reducible` transparency its argument stays stuck, `paramListToTuple` cannot match on it, and
-the goal never presents the `_ × _` that `Lens.disjoint_ofst_osnd` and the `o`-instances are
-stated for.  `Lens.intoVars` inherits that and adds nothing of its own — nor can it be stated
-otherwise, since its argument type *is* the stuck one, which is why every locals lens goes
-through `List.map` by construction.  (Parameters escape: `paramTypes` is a literal list, which
-is also why a numeral argument of a `call` needs no ascription any more.)  Neither spelling of
-the assignment avoids it — `[lvalRaw|]` sends the parenthesised tuple to `Lens.pair` just as
-the comma-list does:
+They do fire by themselves, including for *locals*, and `Correctness` below writes
+`c,d <- call S.commit (…)` with nothing supplied by hand.  That took two `@[reducible]`s in
+`Language/Programs.lean`, both there for this reason and worth not undoing:
+
+* `paramListToTuple`, so a concrete type list shows unification the `_ × _` the
+  `o`-instances are stated for (it is also what lets a numeral argument of a `call` go
+  through without an ascription);
+* `localTypes`, which replaced `locals.map (·.fst)` in `LocalVariableState.vars`.  `List.map`
+  is *not* reducible, so with it the argument of `paramListToTuple` stayed stuck at
+  `reducible` transparency, `paramListToTuple` could not match on it, and the tuple never
+  opened up.  `Lens.intoVars` inherited that and could not be stated around it, since its
+  argument type *is* that tuple — which is why every locals lens went through `List.map` by
+  construction, while parameters (a literal list) escaped.
+
+Before that, the assignment failed as
 ```
 c, d   <- call S.commit (…);   -- failed to synthesize instance of type class  disjoint c d
-(c, d) <- call S.commit (…);   -- same
+(c, d) <- call S.commit (…);   -- same; `[lvalRaw|]` sends the tuple to `Lens.pair` either way
 ```
-That the macro binds locals as `let`-variables is *not* a second, independent cause, contrary
-to what this note used to claim: on 4.31 instance search does unfold local `let`s.  The same
-two goals `let`-bound succeed at a literal type list and fail at the `List.map` one, exactly
-as the unbound versions do; a plain `def` is what is opaque at `reducible`, a local `let` is
-not.  The fix, then, is a reducible replacement for `locals.map (·.fst)` in
-`LocalVariableState.vars` — with one, `disjoint` synthesizes on its own.
+and had to be preceded by an explicit `haveI : disjoint c d := Lens.disjoint_chain …`, peeling
+the `chain` prefix the two lenses share down to the slot where they differ.  Two things that
+look like causes here are not: that the macro binds locals as `let`-variables (4.31 instance
+search does unfold local `let`s — a plain `def` is what is opaque at `reducible`), and
+`Lens.intoVars` itself (`Programs.disjoint_intoVars` peels it fine once the slots are
+disjoint).
 
-Until that lands: since `let`/`have`/`letI`/`haveI` became statements of the `proc` body, the
-instance can simply be supplied where it is needed.  Elaboration unfolds `List.map`, so
-applying the instances by hand does go through — peel the `chain` prefix the two lenses share
-and finish at the slot where they differ:
-```
-haveI : disjoint c d :=
-  Lens.disjoint_chain _ _ _ (d := Lens.disjoint_chain _ _ _ (d :=
-    Lens.disjoint_chain _ _ _ (d := Lens.disjoint_ofst_osnd _ _)));
-```
-`Correctness` below is written that way.  `HidingExperiment` and `BindingExperiment` still
-take the cheaper route of pair-typed locals
-read through `$`-projections — `var cd : Commitment × OpeningKey` then `($cd).1`/`($cd).2`. -/
+`HidingExperiment` and `BindingExperiment` used to work around it with pair-typed locals read
+through `$`-projections (`var cd : Commitment × OpeningKey`, then `($cd).1`/`($cd).2`); they
+are now written as one `var` per component, `BindingExperiment` taking a five-wide tuple
+apart in a single assignment. -/
 
 -- TODO: changes to named variable if CommitmentTypes becomes a structure (but see the
 -- ⚠ above: that may be blocked)
@@ -270,7 +266,7 @@ example : CommitmentScheme = Module CommitmentScheme.typeRep := rfl
     projections of the two commute — no hypothesis on `x`, `y` needed. -/
 instance LocalVariableState.disjoint_varsL_paramsL {a b : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
-    {x : Lens a (paramListToTuple (locals.map (·.fst)))}
+    {x : Lens a (paramListToTuple (localTypes locals))}
     {y : Lens b (paramListToTuple paramTypes)} :
     disjoint (LocalVariableState.varsL.chain x) (LocalVariableState.paramsL.chain y) :=
   ⟨fun _ _ _ => rfl⟩
@@ -281,7 +277,7 @@ instance LocalVariableState.disjoint_varsL_paramsL {a b : Type} {paramTypes : Li
 instance LocalVariableState.disjoint_paramsL_varsL {a b : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
     {x : Lens a (paramListToTuple paramTypes)}
-    {y : Lens b (paramListToTuple (locals.map (·.fst)))} :
+    {y : Lens b (paramListToTuple (localTypes locals))} :
     disjoint (LocalVariableState.paramsL.chain x) (LocalVariableState.varsL.chain y) :=
   ⟨fun _ _ _ => rfl⟩
 
@@ -297,8 +293,8 @@ instance Programs.disjoint_intoParams {a b : Type} {paramTypes : List Type}
 
 instance Programs.disjoint_intoVars {a b : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
-    {x : Lens a (paramListToTuple (locals.map (·.fst)))}
-    {y : Lens b (paramListToTuple (locals.map (·.fst)))} [disjoint x y] :
+    {x : Lens a (paramListToTuple (localTypes locals))}
+    {y : Lens b (paramListToTuple (localTypes locals))} [disjoint x y] :
     disjoint (Lens.intoVars (paramTypes := paramTypes) x) y.intoVars :=
   Lens.disjoint_chain ProcedureState.localL _ _
 
@@ -307,7 +303,7 @@ instance Programs.disjoint_intoVars {a b : Type} {paramTypes : List Type}
     scope record, so no `disjoint x y` hypothesis is required. -/
 instance Programs.disjoint_intoVars_intoParams {a b : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
-    {x : Lens a (paramListToTuple (locals.map (·.fst)))}
+    {x : Lens a (paramListToTuple (localTypes locals))}
     {y : Lens b (paramListToTuple paramTypes)} :
     disjoint (Lens.intoVars (paramTypes := paramTypes) x) (Lens.intoParams (locals := locals) y) :=
   Lens.disjoint_chain ProcedureState.localL _ _
@@ -317,7 +313,7 @@ instance Programs.disjoint_intoVars_intoParams {a b : Type} {paramTypes : List T
 instance Programs.disjoint_intoParams_intoVars {a b : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)}
     {x : Lens a (paramListToTuple paramTypes)}
-    {y : Lens b (paramListToTuple (locals.map (·.fst)))} :
+    {y : Lens b (paramListToTuple (localTypes locals))} :
     disjoint (Lens.intoParams (locals := locals) x) (Lens.intoVars (paramTypes := paramTypes) y) :=
   Lens.disjoint_chain ProcedureState.localL _ _
 
@@ -345,11 +341,6 @@ module Correctness (S : CommitmentScheme) {
     var c : Commitment;
     var d : OpeningKey;
     var b : Bool;
-    haveI : disjoint c d :=
-      Lens.disjoint_chain _ _ _ (d :=
-        Lens.disjoint_chain _ _ _ (d :=
-          Lens.disjoint_chain _ _ _ (d :=
-            Lens.disjoint_ofst_osnd _ _)));
     x <- call S.gen ();
     c,d <- call S.commit ($x, $m);
     b <- call S.verify ($x, $m, $c, $d);
@@ -384,20 +375,21 @@ module HidingExperiment (S:CommitmentScheme, U:Unhider) = {
 Two module parameters, so `HidingExperiment` is a functor of the *pair* and each field is a
 functor of the parameters it uses (both, here).  `{0,1}` is `SubProbability.uniform` at `Bool`.
 
-`(m0, m1)` and `(c, d)` stay pair-typed locals read through `$`-projections rather than tuple
-assignments — see the ⚠ above; `mm, m1 <- call U.choose (…)` does not elaborate yet. -/
+`(m0, m1)` and `(c, d)` are tuple assignments, one local per component, as in EC. -/
 module HidingExperiment (S : CommitmentScheme, U : Unhider) {
   proc main() : Bool {
     var x : Value;
-    var mm : Message × Message;
+    var m0 : Message;
+    var m1 : Message;
     var b : Bool;
-    var cd : Commitment × OpeningKey;
+    var c : Commitment;
+    var d : OpeningKey;
     var bg : Bool;
     x <- call S.gen ();
-    mm <- call U.choose ($x);
+    m0,m1 <- call U.choose ($x);
     b <$ SubProbability.uniform;
-    cd <- call S.commit ($x, if $b then ($mm).2 else ($mm).1);
-    bg <- call U.guess (($cd).1);
+    c,d <- call S.commit ($x, if $b then $m1 else $m0);
+    bg <- call U.guess ($c);
     return $b == $bg
   };
 }
@@ -425,20 +417,24 @@ module BindingExperiment (S:CommitmentScheme, B:Binder) = {
   }
 }.
 ```
-`Binder.bind` returns `commitment * message * openingkey * message * openingkey`, right-nested,
-so the projections off `r` are `c = r.1`, `m = r.2.1`, `d = r.2.2.1`, `m' = r.2.2.2.1`,
-`d' = r.2.2.2.2` — and `verify` takes them in the order `(x, m, c, d)`. -/
+`Binder.bind` returns `commitment * message * openingkey * message * openingkey`, taken apart
+by a five-wide tuple assignment — note `verify` takes the components in the order
+`(x, m, c, d)`, not the order they arrive in. -/
 module BindingExperiment (S : CommitmentScheme, B : Binder) {
   proc main() : Bool {
     var x : Value;
-    var r : Commitment × Message × OpeningKey × Message × OpeningKey;
+    var c : Commitment;
+    var m : Message;
+    var d : OpeningKey;
+    var m' : Message;
+    var d' : OpeningKey;
     var v : Bool;
     var v' : Bool;
     x <- call S.gen ();
-    r <- call B.bind ($x);
-    v <- call S.verify ($x, ($r).2.1, ($r).1, ($r).2.2.1);
-    v' <- call S.verify ($x, ($r).2.2.2.1, ($r).1, ($r).2.2.2.2);
-    return $v && $v' && !(($r).2.1 == ($r).2.2.2.1)
+    c,m,d,m',d' <- call B.bind ($x);
+    v <- call S.verify ($x, $m, $c, $d);
+    v' <- call S.verify ($x, $m', $c, $d');
+    return $v && $v' && !($m == $m')
   };
 }
 
