@@ -365,6 +365,27 @@ module Fixed (k : Nat) {
 }
 #check (Fixed : (k : Nat) → Module.Proc (procsig (Fin (k+1)) -> (Fin (k+1))))
 
+/- A Lean parameter may be named after one of the binders the commands invent for themselves —
+the module an accessor takes, the record `mk` takes, the expression a `proj` takes, a hole
+instantiation, the empty parameter tuple.  Those are hygienic, so it cannot capture them; before
+they were, a `moduletype Foo (m : Nat)` produced `def Foo.gen (m : Nat) (m : Foo (m := m)) : …`,
+whose field type read the module where it wanted the number, and the whole batch failed. -/
+moduletype AllTheNames (m : Nat) (s : Nat) (e : Nat) (args : Nat) (t : Nat) {
+  proc gen () -> (Fin (m + s + e + args + t + 1));
+  proc use (Fin (m + s + e + args + t + 1)) -> Bool;
+}
+#check (AllTheNames.gen : (m s e args t : Nat) → AllTheNames m s e args t →
+  Module.Proc (procsig () -> (Fin (m + s + e + args + t + 1))))
+
+module UsesThemToo (args : Nat) using (S : OneField) {
+  proc main() : Bool {
+    var b : Bool;
+    b <- call S.only (args);
+    return $b
+  };
+}
+#check (UsesThemToo : (args : Nat) → Module.Arr OneField (Module.Proc (procsig () -> Bool)))
+
 /- ### A parameterised `moduletype` as a declared type
 
 `module X … : T` builds the record of its procedures with `T.mk { f₁ := …, … }` when `T` is a

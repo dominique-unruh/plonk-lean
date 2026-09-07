@@ -219,26 +219,19 @@ def paramBinders (what : String) (ps : Array (TSyntax `gaudi_param)) :
         s!"{what}: a comma-separated group is not a Lean parameter list.  If these are the \
 module parameters, write them after `using`."
 
-/- TODO: the binders the two commands invent for themselves collide with a Lean parameter of the
-same name, and the collision is a hard error, not a cosmetic one.  The names are `m` and `s` and
-`e` (`moduletype`: the module, the record, the expression), and `args` and `t` (`module`: a hole
-instantiation, the empty parameter tuple).  A user parameter named `m` shadows the module binder in
-`def X.gen (m : Nat) (m : X (m := m)) : Module.Proc (procsig () -> (Fin (m+1)))`, so the field type
-reads the module where it wanted the number, and the whole batch fails from there
-("failed to synthesize HAdd (X m✝) ℕ ℕ", then `Unknown constant X.gen`, and so on).  `m`, `s` and
-`args` are emitted by every declaration and so always collide; `t` only when the `using` list is
-empty; `e` never, since it binds inside `proj := fun e => …`, a scope no cross-reference reaches.
+/-- A binder one of the commands invents for itself — the module an accessor takes, the record
+`mk` takes, and so on.  Hygienic, so that a Lean parameter of the same name cannot capture it: the
+generated declarations refer to these binders by name, and a user parameter called `m` used to
+shadow the module binder in `def X.gen (m : Nat) (m : X (m := m)) : … (Fin (m+1))`, whereupon the
+field type read the module where it wanted the number and the whole batch failed from there.
 
-Two things to do, and the second on its own is not enough:
-
- 1. make these idents hygienic, so that a user parameter cannot capture them at all;
- 2. give them meaningful names regardless — `m`, `s`, `e`, `t` are what shows up in every
-    `#check` and every goal these declarations appear in, and a reader deserves better than
-    single letters there.  `theModule`, `theRecord`, `theExpression`, `holeArgs`, `paramTuple`,
-    or whatever reads best at the use sites.
-
-Hygiene alone would fix the bug and leave the display as `m✝`; renaming alone would only move the
-collision to a less likely name. -/
+The names are also spelled out rather than single letters, which is a separate matter from the
+capture: these are what shows up in every `#check` of a generated declaration and in every goal
+one appears in, and the delaborator strips the macro scopes again, so what a reader sees is
+`theRecord`, not `theRecord✝`.  Renaming alone would only have moved the collision to a less
+likely name; hygiene alone would have left the single letters on display. -/
+def internalIdent (base : Name) : CommandElabM Ident :=
+  return mkIdent (← MonadQuotation.addMacroScope base)
 
 /-- A name for an anonymous binder position. -/
 private def freshParamName (i : Nat) : Ident := mkIdent (Name.mkSimple s!"_gaudiParam{i}")
@@ -460,8 +453,8 @@ elab_rules : command
       let moduleTypeId := mkIdent (nb.str "typeRep")
       let accIds   := fns.map fun f => mkIdent (nb ++ f.getId)
       let projId : Nat → Ident := fun i => mkIdent ((nb.str "Structure") ++ fns[i]!.getId)
-      let mId := mkIdent `m
-      let sId := mkIdent `s
+      let mId ← internalIdent `theModule
+      let sId ← internalIdent `theRecord
       -- how the generated declarations refer to one another: with the Lean parameters applied
       let typeRepR ← P.ref moduleTypeId
       let nmR      ← P.ref nm
@@ -490,7 +483,7 @@ elab_rules : command
       -- and the two lemmas relating that module and the accessor's expression to the projection.
       -- One declaration per field, rather than one per fact.
       let utilIds := accIds.map fun a => mkIdent (a.getId.str "utilities")
-      let eId := mkIdent `e
+      let eId ← internalIdent `theExpression
       for i in [0:n] do
         let accId := accIds[i]!
         let ft := fts[i]!
@@ -1047,7 +1040,7 @@ def elabProcedure (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term)
   let declRef ← P.ref declId
   -- pass 3: the same body once more, with each hole call `call args ‹its index›` instead — the
   -- right-hand side of `X.<f>.procedure.apply_simp`
-  let argsId := mkIdent `args
+  let argsId ← internalIdent `holeArgs
   let nh := callees.size
   let instCallees ← (Array.range nh).mapM fun k => do
     let mut idx ← `(GaudisCrypt.HoleIndex.zero)
@@ -1226,7 +1219,7 @@ def elabApplySimp (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term)
     (mkId? : Option Term) (procs : Array ProcResult) : CommandElabM Ident := do
   let bs := P.binders
   let n := paramBs.size
-  let tId := mkIdent `t
+  let tId ← internalIdent `paramTuple
   -- the record of the procedures, each applied to the arguments at its `usedPos`
   let paramTerms : Array Term := paramBs.map fun b => b.1
   let rhs ← mkRecord mkId? procs (← procs.mapM fun r => do
