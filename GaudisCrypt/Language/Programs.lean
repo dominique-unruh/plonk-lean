@@ -122,6 +122,22 @@ def LocalVariableState.varsL {paramTypes : List Type}
   set_set _ _ _ := rfl
   get_set _ := rfl
 
+/-- `params` and `vars` are distinct fields of `LocalVariableState`, so writes through the two
+    field lenses commute. -/
+instance LocalVariableState.disjoint_varsL_paramsL {paramTypes : List Type}
+    {locals : List (Σ t : Type, Inhabited t)} :
+    disjoint (LocalVariableState.varsL (paramTypes := paramTypes) (locals := locals))
+      (LocalVariableState.paramsL (paramTypes := paramTypes) (locals := locals)) :=
+  ⟨fun _ _ _ => rfl⟩
+
+/-- The mirror image of `LocalVariableState.disjoint_varsL_paramsL`; `disjoint.symm` is a
+    theorem, not an instance, so search needs both orientations spelled out. -/
+instance LocalVariableState.disjoint_paramsL_varsL {paramTypes : List Type}
+    {locals : List (Σ t : Type, Inhabited t)} :
+    disjoint (LocalVariableState.paramsL (paramTypes := paramTypes) (locals := locals))
+      (LocalVariableState.varsL (paramTypes := paramTypes) (locals := locals)) :=
+  ⟨fun _ _ _ => rfl⟩
+
 /-- Lift a lens into the parameter tuple to a lens into the full procedure state
 (`localL ∘ paramsL`).  Analogous to `Lens.ofst`.  (Defined in the `Lens` namespace via
 `_root_` so dot notation `lens.intoParams` resolves.) -/
@@ -129,6 +145,15 @@ def Lens.intoParams {a : Type} {paramTypes : List Type}
     {locals : List (Σ t : Type, Inhabited t)} (lens : Lens a (paramListToTuple paramTypes)) :
     Lens a (ProcedureState (LocalVariableState paramTypes locals)) :=
   ProcedureState.localL.chain (LocalVariableState.paramsL.chain lens)
+
+/-- Procedure parameters are `Lens.intoParams` of their slot projections; distinct slots are
+    disjoint, and `intoParams` (two `chain` layers) preserves that. -/
+instance Programs.disjoint_intoParams {a b : Type} {paramTypes : List Type}
+    {locals : List (Σ t : Type, Inhabited t)}
+    {x : Lens a (paramListToTuple paramTypes)}
+    {y : Lens b (paramListToTuple paramTypes)} [disjoint x y] :
+    disjoint (Lens.intoParams (locals := locals) x) y.intoParams :=
+  Lens.disjoint_chain ProcedureState.localL _ _
 
 /-- Lift a lens into the local-variable tuple to a lens into the full procedure state
 (`localL ∘ varsL`).  Analogous to `Lens.ofst`. -/
@@ -147,6 +172,25 @@ instance Programs.disjoint_intoVars {a b : Type} {paramTypes : List Type}
     {y : Lens b (paramListToTuple (localTypes locals))} [disjoint x y] :
     disjoint (Lens.intoVars (paramTypes := paramTypes) x) y.intoVars :=
   Lens.disjoint_chain ProcedureState.localL _ _
+
+/-- A local variable is disjoint from *any* parameter: `params` and `vars` are distinct fields
+    of the scope record, so writes through projections of the two commute outright — no
+    `disjoint x y` hypothesis, and no lemma about the `chain` prefix they share. -/
+instance Programs.disjoint_intoVars_intoParams {a b : Type} {paramTypes : List Type}
+    {locals : List (Σ t : Type, Inhabited t)}
+    {x : Lens a (paramListToTuple (localTypes locals))}
+    {y : Lens b (paramListToTuple paramTypes)} :
+    disjoint (Lens.intoVars (paramTypes := paramTypes) x) (Lens.intoParams (locals := locals) y) :=
+  ⟨fun _ _ _ => rfl⟩
+
+/-- The other orientation of `Programs.disjoint_intoVars_intoParams`; `disjoint.symm` is a
+    theorem, not an instance, so search needs both spelled out. -/
+instance Programs.disjoint_intoParams_intoVars {a b : Type} {paramTypes : List Type}
+    {locals : List (Σ t : Type, Inhabited t)}
+    {x : Lens a (paramListToTuple paramTypes)}
+    {y : Lens b (paramListToTuple (localTypes locals))} :
+    disjoint (Lens.intoParams (locals := locals) x) (Lens.intoVars (paramTypes := paramTypes) y) :=
+  ⟨fun _ _ _ => rfl⟩
 
 def ProcedureSignature.ParamType (sig : ProcedureSignature) := paramListToTuple sig.params
 

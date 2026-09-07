@@ -4,6 +4,7 @@ import GaudisCrypt.Language.Programs
 import Metatheory.STLCext.Normalization
 import Metatheory.STLCext.Confluence
 
+-- CLAUDE-TODO: Rename this file to TypedModules.lean
 namespace GaudisCrypt.TypedModules
 
 open GaudisCrypt
