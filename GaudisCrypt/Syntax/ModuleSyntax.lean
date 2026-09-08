@@ -24,7 +24,8 @@ shorthand for `module fᵢ : ModuleTypeRep.proc (procsig (A₁, …) -> R);`.  I
 (the corresponding `Module`), a record `Name.Structure` with fields `fᵢ : Module Tᵢ` — a `proc`
 field getting the `Module.Proc (procsig …)` spelling of that, the one a `module`-declared procedure
 carries — accessors `Name.fᵢ`, a constructor `Name.mk`, a destructor `Name.structure`, and
-round-trip `@[simp]` lemmas relating them.
+`@[simp]` lemmas relating them: `Name.fᵢ.mk_simp` reads a field back off a `mk`, and
+`Name.mk_destruct`/`Name.destruct_mk` are the round trip through `Name.structure`.
 -/
 
 namespace GaudisCrypt
@@ -123,9 +124,20 @@ Defined:
 ```
 where each *name* is a link that inserts `#check <name>` right after the command and puts the
 cursor at the end of the inserted line (the same edit is also offered as a code action).
-`declared` pairs each name with a short description of what it is. -/
+`declared` pairs each name with a short description of what it is.
+
+A generated lemma that carries `@[simp]` is shown with that attribute in front of its name, so the
+listing says not only what exists but what will fire on its own. -/
 def logDeclared (ref : Syntax) (declared : Array (Name × String)) : CommandElabM Unit := do
   if declared.isEmpty then return
+  -- read off the attribute rather than being told about it: the commands apply `@[simp]` with the
+  -- declaration, so the extension's state is the one thing that cannot drift from what was emitted.
+  -- `declared` holds the *short* names (see below), so a name is looked up in the current namespace
+  -- as well, which is where the commands put what they declare.
+  let simpLemmas := (Meta.simpExtension.getState (← getEnv)).lemmaNames
+  let ns ← getCurrNamespace
+  let isSimp := fun (n : Name) =>
+    simpLemmas.contains (.decl (ns ++ n)) || simpLemmas.contains (.decl n)
   -- the edit's range is empty and sits at the command's tail, so applying it *inserts* the
   -- `#check` on the following line rather than overwriting anything
   let some tailPos := ref.getTailPos? | return
@@ -155,7 +167,8 @@ def logDeclared (ref : Syntax) (declared : Array (Name × String)) : CommandElab
             hoverText: $(title),
             linkText: $(n.toString) } }
       n.toString
-    msg := msg ++ m!"\n• {link} — {descr}"
+    let attrs := if isSimp n then "@[simp] " else ""
+    msg := msg ++ m!"\n• {attrs}{link} — {descr}"
   msg := msg ++ "\n\n(Click to insert `#check symbolname`.)"
   logInfoAt ref msg
 
@@ -456,7 +469,9 @@ for a `proc` field, so that the record and the procedures a `module` declaration
 stated in the same terms, which is what lets `simp` chain `X.apply_simp` into `X.f.apply_simp` —
 accessors `Name.fᵢ`
 (via `Module.fst'`/`Module.snd'`), a constructor `Name.mk`, a destructor `Name.structure`, and
-the two round-trip `@[simp]` lemmas `Name.mk_destruct` / `Name.destruct_mk`.
+three kinds of `@[simp]` lemma: `Name.fᵢ.mk_simp` (`Name.fᵢ (Name.mk r) = r.fᵢ` — the one that
+carries an `X.apply_simp`'s right-hand side on to the field the caller asked for) and the two
+round-trips `Name.mk_destruct` / `Name.destruct_mk`.
 
 What is derivable about an accessor goes into a single `Name.fᵢ.utilities :
 ModuleTypeUtilities …` per field — the accessor as a *module* (a projection is a module morphism),
@@ -584,7 +599,18 @@ elab_rules : command
         `($accR $mId)
       elabCommand (← `(noncomputable def $structFn $bs* ($mId : $nmR) : $structR :=
         $ctorR $args*))
-      -- (6) / (7) round-trip lemmas
+      -- (6) reading a field back off a built module: `X.fᵢ (X.mk r) = r.fᵢ`.  Only in the
+      -- single-field case is this `rfl`; in general `mk` is a nest of `Module.pair'`s and the
+      -- accessor a chain of `fst'`/`snd'`, and the `@[simp]` `Module.fst_pair'`/`Module.snd_pair'`
+      -- do the cancelling.  `@[simp]`, because it is what turns an `X.apply_simp` (whose right-hand
+      -- side is an `X.mk`) into the field the caller actually asked for.
+      let mkSimpIds := accIds.map fun a => mkIdent (a.getId.str "mk_simp")
+      for i in [0:n] do
+        let unfold : Array Ident := #[mkId, accIds[i]!]
+        elabCommand (← `(@[simp] theorem $(mkSimpIds[i]!) $bs* ($sId : $structR) :
+          $(accRs[i]!) ($mkR $sId) = $(projRs[i]!) $sId := by
+            simp [$[$unfold:ident],*]))
+      -- (7) / (8) round-trip lemmas
       let baseLemmas : Array Ident := #[mkId, structFn] ++ accIds
       elabCommand (← `(@[simp] theorem $(mkIdent (nb.str "mk_destruct")) $bs*
           ($sId : $structR) :
@@ -592,7 +618,7 @@ elab_rules : command
       let dmLemmas : Array Ident := baseLemmas.push (mkIdent `Module.pair_fst_snd')
       elabCommand (← `(@[simp] theorem $(mkIdent (nb.str "destruct_mk")) $bs* ($mId : $nmR) :
           $mkR ($structFnR $mId) = $mId := by simp [$[$dmLemmas:ident],*]))
-      -- (8) report the batch, the same way the `module` command does
+      -- (9) report the batch, the same way the `module` command does
       let mut declared : Array (Name × String) :=
         #[(moduleTypeId.getId, "the underlying ModuleTypeRep"),
           (nb, "the module type itself"),
@@ -602,6 +628,8 @@ elab_rules : command
         declared := declared.push (accIds[i]!.getId, s!"the field {fns[i]!.getId}")
         declared := declared.push (utilIds[i]!.getId,
           s!"that field as a module, and the lemmas about it")
+        declared := declared.push (mkSimpIds[i]!.getId,
+          s!"that field of a module built by mk")
       declared := declared ++
         #[(mkId.getId, "the module built from a record"),
           (structFn.getId, "the record of a module's fields"),
