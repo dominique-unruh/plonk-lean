@@ -701,7 +701,8 @@ down to a procedure: `Module.app (… (Module.app X.f A) …) Z = Module.proc
 as written, with the arguments in place of the module parameters).  A procedure with no holes uses
 no parameter either, and the lemma is then just `X.f = Module.proc X.f.procedure`.
 
-The last step — getting rid of the `instantiate` — is `X.<f>.procedure.apply_simp`, also `@[simp]`:
+The last step — getting rid of the `instantiate` — is `X.<f>.procedure.apply_simp`, the one lemma
+of the batch that is *not* `@[simp]`:
 ```
 theorem X.f.procedure.apply_simp (args : ‹hole context›.Instantiation) :
     X.f.procedure.instantiate args = proc (x : T, …) : R { … }
@@ -710,7 +711,12 @@ whose right-hand side is the procedure as it was declared, only with each hole c
 an ordinary `call args ‹the hole's index›` (so the callees of the body appear as
 `args HoleIndex.zero`, `args HoleIndex.zero.succ`, …, the last-declared hole being `.zero`).  After
 `X.<f>.apply_simp` — and with `HoleSigs.Instantiation.push_zero`/`_succ` to look the indices up —
-`simp` takes an application of `X` all the way to a hole-free `Procedure`. -/
+naming it takes an application of `X` all the way to a hole-free `Procedure`.
+
+It is left out of the `simp` set on purpose.  Its right-hand side is the whole procedure body, so as
+a `@[simp]` lemma it turns every goal that so much as mentions an instantiated procedure into that
+body; inlining a procedure is a step to ask for by name.  The `@[simp]` lemmas above it stop exactly
+at `Module.proc (X.<f>.procedure.instantiate …)`. -/
 
 /-- One procedure of a `module` declaration: `proc f (x : T, …) : R { … };`.  Same shape as
 the `proc` *term* syntax (which it expands to), plus a name and a trailing `;`. -/
@@ -866,6 +872,41 @@ macro_rules
 namespace GaudisCrypt.ModuleDecl
 
 open Lean Elab Command Meta Term
+
+/-! ### Keeping the generated `@[simp]` lemmas findable
+
+A generated lemma is stated over the declaration's Lean parameters — `∀ (types : CommitmentTypes),
+Module.app (X.main types) S = …` — and `simp` files it under a discrimination key computed from its
+left-hand side at *reducible* transparency.  The key therefore contains, at the type arguments of
+`Module.app` and friends, the field types as the abstract parameter spells them
+(`ProcedureSignature.mk [types.Message] Bool`).  A caller who instantiates that parameter with a
+`@[reducible]` definition — as `Pedersen.lean` does, deliberately, with
+`@[reducible] def PedersenGroup.types` — gives simp a goal whose key has those same positions
+already reduced (`ProcedureSignature.mk [group.F] Bool`).  Different key, so the lemma is never
+retrieved and silently does not fire, and the caller is pushed back to `rw`.
+
+The fix is `no_index`, which tells the discrimination tree to index a subterm as a wildcard.  The
+type arguments carry no information that is not already in the head of the function argument
+(`X.main`), so blanking them costs no selectivity and makes the lemma fire at every instantiation.
+The helpers below are the only places these applications are written, so every generated lemma gets
+it — the module-type arguments of `Module.app`/`Module.pair` and the hole/signature arguments of
+`ProcedureWithHoles.instantiate`.
+
+`no_index` is a reducible identity, so what it changes is the index and nothing else: the lemma
+states the same proposition it did before. -/
+
+/-- `Module.app f x`, with the two module types kept out of simp's discrimination key. -/
+def appR (f x : Term) : CommandElabM Term :=
+  `(GaudisCrypt.Module.app (M := no_index _) (N := no_index _) $f $x)
+
+/-- `Module.pair a b`, with the two module types kept out of simp's discrimination key. -/
+def pairR (a b : Term) : CommandElabM Term :=
+  `(GaudisCrypt.Module.pair (M := no_index _) (N := no_index _) $a $b)
+
+/-- `p.instantiate args`, with the hole signatures and the procedure signature kept out of simp's
+discrimination key. -/
+def instantiateR (p args : Term) : CommandElabM Term :=
+  `(GaudisCrypt.ProcedureWithHoles.instantiate (holes := no_index _) (sig := no_index _) $p $args)
 
 /-- The positional name of the `i`-th generated hole.  Only a fallback: a hole is normally
 named after the callee it stands for, see `holeIdentsOfCallees`. -/
@@ -1193,9 +1234,13 @@ def elabProcedure (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term)
   for (hps, hret) in holeSigs do
     hCtx ← `(GaudisCrypt.HoleSigs.append $hCtx (procsig ( $hps,* ) -> $hret))
   let instThmId := mkIdent (declId.getId ++ `apply_simp)
-  elabCommand (← `(command| @[simp] theorem $instThmId:ident $bs* :
+  let instLhs ← instantiateR declRef argsId
+  -- deliberately *not* `@[simp]`, unlike the other `apply_simp` lemmas: its right-hand side is the
+  -- procedure's whole body written out, so letting it fire on its own turns any goal that mentions
+  -- an instantiated procedure into that body.  Inlining a procedure is a step to ask for by name.
+  elabCommand (← `(command| theorem $instThmId:ident $bs* :
     ($argsId : GaudisCrypt.HoleSigs.Instantiation $hCtx) →
-      GaudisCrypt.ProcedureWithHoles.instantiate $declRef $argsId = $instTerm :=
+      $instLhs = $instTerm :=
     fun $argsId => rfl))
   return some { fn, declId, declRef, usedPos, calleeExprs, callees := callees.map (⟨·⟩),
                 instThmId }
@@ -1276,7 +1321,7 @@ def elabProcApplySimp (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × T
   for c in r.callees do
     inst ← `(GaudisCrypt.HoleSigs.Instantiation.push $inst (GaudisCrypt.Module.Proc.procedure $c))
   let mut lhs : Term := modRef
-  for i in r.usedPos do lhs ← `(GaudisCrypt.Module.app $lhs $(paramBs[i]!.1))
+  for i in r.usedPos do lhs ← appR lhs paramBs[i]!.1
   -- the statement, as a `(x : T) → …` chain (there is no binder syntax to splice into a `theorem`)
   let mut stmt ← `($lhs = GaudisCrypt.Module.proc
     (GaudisCrypt.ProcedureWithHoles.instantiate $(r.declRef) $inst))
@@ -1368,9 +1413,9 @@ def elabApplySimp (nm : Ident) (P : LeanParams) (paramBs : Array (Ident × Term)
     pure e)
   let argTuple : Term ←
     if n == 0 then pure (tId : Term)
-    else rightNest (fun a b => `(GaudisCrypt.Module.pair $a $b)) paramTerms
+    else rightNest pairR paramTerms
   -- the statement, as a `(x : T) → …` chain (there is no binder syntax to splice into a `theorem`)
-  let mut stmt ← `(GaudisCrypt.Module.app $(← P.ref nm) $argTuple = $rhs)
+  let mut stmt ← `($(← appR (← P.ref nm) argTuple) = $rhs)
   if n == 0 then
     stmt ← `(($tId : GaudisCrypt.Module.Unit) → $stmt)
   else
@@ -1483,3 +1528,7 @@ elab_rules : command
     if results.size == procs.size then
       declared := declared ++ (← elabModule nm P paramBs? mt results)
     logDeclared (← getRef) declared
+
+
+-- TODO: `Defined:` info in InfoView should show `def` or `lemma` in front of the names.
+-- TODO: Autogenerated lemmas should get an autogenerated docstring

@@ -220,6 +220,8 @@ example (a : Module.Arr TestModule (procmod () → Unit)) (b : TestModule) :
     X.h.procedure.instantiate args = proc () : Unit { return (); })
 
 -- and now all three families chain: a field of an applied `X` all the way to a plain `Procedure`.
+-- The last of them, `X.g.procedure.apply_simp`, has to be named: it is deliberately not `@[simp]`,
+-- since its right-hand side is the whole procedure body.
 -- (`Module.Proc.procedure (Module.app …)` rather than `(Module.app …).procedure`: written prefix,
 -- the expected type `Module (.proc _)` reaches `Module.app`'s result type before `a`'s type does,
 -- which is how the generated lemmas spell it — the two are defeq but not syntactically equal.)
@@ -231,7 +233,7 @@ example (a : Module.Arr TestModule (procmod () → Unit)) (b : TestModule) :
           _ <- call (Module.Proc.procedure myMod.main) ("hello", (5 : Nat));
           return ();
         }) := by
-  simp [M2.g, M2.mk]
+  simp [M2.g, M2.mk, X.g.procedure.apply_simp]
 
 -- `M2.g.mk_simp`, the `@[simp]` lemma the `moduletype` command emits per field: it is what carries
 -- an `apply_simp` (whose right-hand side is an `M2.mk`) on to the field actually being read
@@ -478,6 +480,34 @@ module WrapSized (n : Nat) using (S : Sized n) : (Sized n) {
   Module.app (WrapSized n) S
     = Sized.mk n { gen := Module.app (WrapSized.gen n) S,
                    use := Module.app (WrapSized.use n) S })
+
+/- ### The generated `@[simp]` lemmas are found at a *reducible* instantiation
+
+A generated lemma is stated over the declaration's Lean parameters, and simp files it under a
+discrimination key computed at reducible transparency.  Instantiate such a parameter with a
+`@[reducible]` definition and the goal's key has the field types already reduced past the parameter
+— a different key, so the lemma would silently not be retrieved.  The commands keep those positions
+out of the key with `no_index` (see `ModuleSyntax.lean`); these are the regression tests.
+
+Each example is `X = X`, which `simp only` closes either way — what is being checked is the absence
+of "This simp argument is unused", i.e. that the lemma was retrieved at all. -/
+
+@[reducible] def three : Nat := 3
+
+example (s : Sized.Structure three) : Sized.gen three (Sized.mk three s)
+    = Sized.gen three (Sized.mk three s) := by simp only [Sized.gen.mk_simp]
+example (s : Sized.Structure three) : Sized.structure three (Sized.mk three s)
+    = Sized.structure three (Sized.mk three s) := by simp only [Sized.mk_destruct]
+example (m : Sized three) : Sized.mk three (Sized.structure three m)
+    = Sized.mk three (Sized.structure three m) := by simp only [Sized.destruct_mk]
+example (S : Sized three) : Module.app (WrapSized three) S
+    = Module.app (WrapSized three) S := by simp only [WrapSized.apply_simp]
+example (S : Sized three) : Module.app (WrapSized.gen three) S
+    = Module.app (WrapSized.gen three) S := by simp only [WrapSized.gen.apply_simp]
+example (holeArgs : (HoleSigs.empty.append (procsig () -> (Fin (three+1)))).Instantiation) :
+    (WrapSized.gen.procedure three).instantiate holeArgs
+      = (WrapSized.gen.procedure three).instantiate holeArgs := by
+  simp only [WrapSized.gen.procedure.apply_simp]
 
 /- A comma-separated group is what the module parameters used to look like, and is not a Lean
 binder list; it is rejected by name rather than by the parser complaining about the comma. -/
