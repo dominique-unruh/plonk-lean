@@ -73,7 +73,11 @@ moduletype Binder {
     types.Commitment × types.Message × types.OpeningKey × types.Message × types.OpeningKey;
 }
 
-module Correctness using (S : CommitmentScheme types) {
+moduletype CorrectnessT {
+  proc main (types.Message) -> Bool;
+}
+
+module Correctness using (S : CommitmentScheme types) : (CorrectnessT types) {
   proc main(m : types.Message) : Bool {
     var x : types.Value;
     var c : types.Commitment, d : types.OpeningKey;
@@ -102,7 +106,12 @@ Two module parameters, so `HidingExperiment` is a functor of the *pair* and each
 functor of the parameters it uses (both, here).  `{0,1}` is `SubProbability.uniform` at `Bool`.
 
 `(m0, m1)` and `(c, d)` are tuple assignments, one local per component, as in EC. -/
-module HidingExperiment using (S : CommitmentScheme types, U : Unhider types) {
+
+moduletype HidingExperimentT {
+  proc main () -> Bool;
+}
+
+module HidingExperiment using (S : CommitmentScheme types, U : Unhider types) : HidingExperimentT {
   proc main() : Bool {
     var x : types.Value;
     var m0 m1 : types.Message;
@@ -137,7 +146,12 @@ This is also the one place a *message comparison* is needed (`m <> m'`).  Rather
 `DecidableEq` field on `CommitmentTypes`, it is supplied classically right where it is used, by
 a `have` in the body: the program is never executed, so the comparison only has to denote a
 `Bool`.  The `have` scopes over the `return` too, which is where the comparison sits. -/
-module BindingExperiment using (S : CommitmentScheme types, B : Binder types) {
+
+moduletype BindingExperimentT {
+  proc main () -> Bool;
+}
+
+module BindingExperiment using (S : CommitmentScheme types, B : Binder types) : BindingExperimentT {
   proc main() : Bool {
     var x : types.Value, c : types.Commitment;
     var m m' : types.Message;
@@ -152,7 +166,5 @@ module BindingExperiment using (S : CommitmentScheme types, B : Binder types) {
     return $v && $v' && !($m == $m')
   };
 }
-
-#print BindingExperiment.main.procedure
 
 end GaudisCrypt.Examples.Pedersen

@@ -7,14 +7,15 @@ import GaudisCrypt.WeakestPreconditions
 A transliteration of EasyCrypt's `examples/Pedersen.ec`:
 
 * EC's `clone DLog` (cyclic group `group` with generator `g`, prime exponent field `exp`)
-  becomes the class `PedersenGroup`: the operations the programs mention, plus the laws the
+  becomes the structure `PedersenGroup`: the operations the programs mention, plus the laws the
   proofs turned out to need (`f_commring`, `gpow_add`, `gpow_mul` — the last two are EC's
-  `expD`/`expM`).
+  `expD`/`expM`).  It is a section `variable (group : PedersenGroup)`, and hence a Lean parameter
+  of everything below that mentions it.
 * EC's `PedersenTypes` + the `Commitment` clone become the `CommitmentTypes` record
-  `pedersenTypes` (value/commitment = group, message/openingkey = exponent), which every
+  `group.types` (value/commitment = group, message/openingkey = exponent), which every
   `CommitmentScheme`-shaped name here is applied to.
 * `module Pedersen : CommitmentScheme` becomes a
-  `module Pedersen : (CommitmentScheme pedersenTypes) { … }` declaration — EC's own syntax, near
+  `module Pedersen : (CommitmentScheme group.types) { … }` declaration — EC's own syntax, near
   enough, now that the `module` command exists.
 * Correctness is stated as EC states it (`hoare[Correctness(Pedersen).main : true ==> res]`):
   the output distribution puts no mass on `res = false`.  Proven (`pedersen_correctness`), on
@@ -44,65 +45,71 @@ set_option linter.dupNamespace false
     `Bool`, not compute one.  `Classical.decEq` supplies that for free, which is why the instances
     below are classical and the class is two fields shorter.  Nothing in the proofs cares: they
     reason about `=`, and `beq_self_eq_true` and friends hold for any `DecidableEq` witness. -/
-class PedersenGroup where
+structure PedersenGroup where
   G : Type
   F : Type
   g : G
+  -- TODO: Change to `[Mul G]`
   gmul : G → G → G
+  -- TODO: Change to `[Pow G F]`
   gpow : G → F → G
-  g_inhabited : Inhabited G
-  f_inhabited : Inhabited F
-  f_fintype : Fintype F
+  [g_inhabited : Inhabited G]
+  -- TODO: Remove. Implied by CommRing F.
+  [f_inhabited : Inhabited F]
+  [f_fintype : Fintype F]
   /-- EC's exponent type is the prime field `DL.GP.ZModE`; the hiding proof forms `d + x * m`
       and its inverse `d - x * m`, so the additive group and the multiplication are both needed.
       (Only the ring structure is required — nothing here uses inverses.) -/
-  f_commring : CommRing F
+  [f_commring : CommRing F]
   /-- EC's `expD`: exponentiation turns addition into multiplication. -/
   gpow_add : ∀ (h : G) (a b : F), gpow h (a + b) = gmul (gpow h a) (gpow h b)
   /-- EC's `expM`: iterated exponentiation multiplies the exponents. -/
   gpow_mul : ∀ (h : G) (a b : F), gpow (gpow h a) b = gpow h (a * b)
 
-namespace PedersenGroup
-variable [PedersenGroup]
-instance : Inhabited G := g_inhabited
-noncomputable instance : DecidableEq G := Classical.decEq G
-instance : Inhabited F := f_inhabited
-instance : CommRing F := f_commring
-noncomputable instance : DecidableEq F := Classical.decEq F
-instance : Fintype F := f_fintype
-instance : Mul G := ⟨gmul⟩
-instance : Pow G F := ⟨gpow⟩
+-- namespace PedersenGroup
+
+variable (group : PedersenGroup)
+
+@[reducible] instance : Inhabited group.G := group.g_inhabited
+@[reducible] noncomputable instance : DecidableEq group.G := Classical.decEq _
+@[reducible] instance : Inhabited group.F := group.f_inhabited
+@[reducible] instance : CommRing group.F := group.f_commring
+@[reducible] noncomputable instance : DecidableEq group.F := Classical.decEq _
+@[reducible] instance : Fintype group.F := group.f_fintype
+@[reducible] instance : Mul group.G := ⟨group.gmul⟩
+@[reducible] instance : Pow group.G group.F := ⟨group.gpow⟩
 
 /-- `gpow_add` at the `^`/`*` notation.  The class fields have to be stated with the raw
     `gmul`/`gpow` (the instances below them do not exist yet), but every use site sees the
     notation, and `rw` matches on the notation's head — not the raw field. -/
-theorem pow_add (h : G) (a b : F) : h ^ (a + b) = h ^ a * h ^ b := gpow_add h a b
+theorem pow_add (h : group.G) (a b : group.F) : h ^ (a + b) = h ^ a * h ^ b := group.gpow_add h a b
 
 /-- `gpow_mul` at the `^` notation. -/
-theorem pow_mul (h : G) (a b : F) : (h ^ a) ^ b = h ^ (a * b) := gpow_mul h a b
+theorem pow_mul (h : group.G) (a b : group.F) : (h ^ a) ^ b = h ^ (a * b) := group.gpow_mul h a b
 
-end PedersenGroup
+-- end PedersenGroup
 
-open PedersenGroup (G F g)
+-- open PedersenGroup (G F g)
+
 
 /-- EC's `PedersenTypes` + `clone Commitment with …`: value/commitment are group elements,
     message/openingkey are exponents. -/
 /- Reducible on purpose.  It used to be an `instance`, which carries `@[reducible]` implicitly, and
-the `wp_*` proofs below rely on it: they are stated at `pedersenTypes.Commitment` and worked on at
-`G`, and every `simp` that has to see through that spelling needs the record to unfold at
+the `wp_*` proofs below rely on it: they are stated at `group.types.Commitment` and worked on at
+`group.G`, and every `simp` that has to see through that spelling needs the record to unfold at
 `reducible` transparency.  A plain `def` leaves `programDenotation` stuck on the `.seq` of the
 procedure's body. -/
-@[reducible] def pedersenTypes [PedersenGroup] : CommitmentTypes where
-  Value := G
-  Message := F
-  Commitment := G
-  OpeningKey := F
+@[reducible] def PedersenGroup.types : CommitmentTypes where
+  Value := group.G
+  Message := group.F
+  Commitment := group.G
+  OpeningKey := group.F
   value_inhabited := inferInstance
   message_inhabited := inferInstance
   commitment_inhabited := inferInstance
   openingKey_inhabited := inferInstance
 
-variable [ProgramSpec] [PedersenGroup]
+variable [ProgramSpec]
 
 /-! ## The scheme
 
@@ -121,27 +128,27 @@ so the record constructor is used rather than a nest of `Module.pair`s).  `Peder
 module parameters, so it *is* the scheme — there is nothing to apply it to, and hence no
 `Pedersen.apply_simp`. -/
 
-module Pedersen : (CommitmentScheme pedersenTypes) {
+module Pedersen : (CommitmentScheme group.types) {
   /- Sample a secret exponent, publish `h = g ^ x`. -/
-  proc gen() : G {
-    var x : F;
-    var h : G;
+  proc gen() : group.G {
+    var x : group.F;
+    var h : group.G;
     x <$ SubProbability.uniform;
-    h <- g ^ $x;
+    h <- group.g ^ $x;
     return $h
   };
   /- Commit to `m` under `h`: sample the opening key `d`, output `g ^ d * h ^ m`. -/
-  proc commit(h : G, m : F) : (G × F) {
-    var c : G;
-    var d : F;
+  proc commit(h : group.G, m : group.F) : (group.G × group.F) {
+    var c : group.G;
+    var d : group.F;
     d <$ SubProbability.uniform;
-    c <- g ^ $d * $h ^ $m;
+    c <- group.g ^ $d * $h ^ $m;
     return ($c, $d)
   };
   /- Recompute the commitment and compare. -/
-  proc verify(h : G, m : F, c : G, d : F) : Bool {
-    var c' : G;
-    c' <- g ^ $d * $h ^ $m;
+  proc verify(h : group.G, m : group.F, c : group.G, d : group.F) : Bool {
+    var c' : group.G;
+    c' <- group.g ^ $d * $h ^ $m;
     return $c == $c'
   };
 }
@@ -152,24 +159,25 @@ To *run* an applied functor module we extract its procedure: a normal closed mod
 expression of procedure type is a `.proc` node (`proc_type_is_proc` / `Module.procedure`,
 now in `Language/Modules.lean`).
 
-`Correctness Pedersen` β/δ-normalizes to `Correctness.main` with Pedersen's procedures in the
-holes.  That reduction used to be done by hand here, by a `functorApp_procedure` bridge lemma, a
-`functor_procedure` tactic, a `Pedersen_expression` record equation and a `pedersenInst` naming
-the hole filling.  None of it is needed any more, and all of it is gone (see the history of this
-file if you want it back): the `module`/`moduletype` commands emit `@[simp]` `apply_simp` lemmas
+`Correctness group.types (Pedersen group)` β/δ-normalizes to `Correctness.main` with Pedersen's
+procedures in the holes.  That reduction used to be done by hand here, by a `functorApp_procedure`
+bridge lemma, a `functor_procedure` tactic, a `Pedersen_expression` record equation and a
+`pedersenInst` naming the hole filling.  None of it is needed any more, and all of it is gone (see
+the history of this file if you want it back): the `module`/`moduletype` commands emit `@[simp]`
+`apply_simp` lemmas
 and tag their accessors `@[module_accessor]`, and those do the whole reduction inline in
 `pedersen_correctness`. -/
 
 /-! ### Per-procedure wp lemmas (EC's `inline`+`auto` steps, done once per procedure)
 
-All three are stated at the `pedersenTypes`-spelled signature the instantiated game carries,
-not at `G`/`F`.  The two are definitionally equal, but `Eq` carries its type as an index, so the
-spelling is what makes them the same proposition as the goal — see the ⚠ below. -/
+All three are stated at the `group.types`-spelled signature the instantiated game carries,
+not at `group.G`/`group.F`.  The two are definitionally equal, but `Eq` carries its type as an
+index, so the spelling is what makes them the same proposition as the goal — see the ⚠ below. -/
 
-theorem wp_gen (f : ProgramDenotation.Post State pedersenTypes.Value) :
-    (procedureDenotation (sig := procsig () -> pedersenTypes.Value)
-        Pedersen.gen.procedure ()).wp f
-      = fun st => ∑ x : F, f (g ^ x, st) / Fintype.card F := by
+theorem wp_gen (f : ProgramDenotation.Post State group.types.Value) :
+    (procedureDenotation (sig := procsig () -> group.types.Value)
+        (Pedersen.gen.procedure group) ()).wp f
+      = fun st => ∑ x : group.F, f (group.g ^ x, st) / Fintype.card group.F := by
   rw [procedureDenotation_eq_procWrap, wp_procWrap]
   funext st
   simp [Pedersen.gen.procedure, programDenotation, StmtWithHoles.assign, wp_bind, wp_get_g,
@@ -179,17 +187,18 @@ theorem wp_gen (f : ProgramDenotation.Post State pedersenTypes.Value) :
     Lens.intoVars, Lens.chain, Lens.ofst, Lens.osnd,
     Lens.fst, Lens.snd, Lens.id, ProcedureState.localL, LocalVariableState.varsL]
 
-theorem wp_commit (args : G × F)
+theorem wp_commit (args : group.G × group.F)
     (f : ProgramDenotation.Post State
-      (pedersenTypes.Commitment × pedersenTypes.OpeningKey)) :
+      (group.types.Commitment × group.types.OpeningKey)) :
     (procedureDenotation
-        (sig := procsig (pedersenTypes.Value, pedersenTypes.Message) ->
-          (pedersenTypes.Commitment × pedersenTypes.OpeningKey))
-        Pedersen.commit.procedure args).wp f
-      = fun st => ∑ x : F, f ((g ^ x * args.1 ^ args.2, x), st) / Fintype.card F := by
+        (sig := procsig (group.types.Value, group.types.Message) ->
+          (group.types.Commitment × group.types.OpeningKey))
+        (Pedersen.commit.procedure group) args).wp f
+      = fun st => ∑ x : group.F, f ((group.g ^ x * args.1 ^ args.2, x), st)
+          / Fintype.card group.F := by
   rw [procedureDenotation_eq_procWrap, wp_procWrap]
   funext st
-  simp [pedersenTypes,
+  simp [PedersenGroup.types,
     Pedersen.commit.procedure, programDenotation, StmtWithHoles.assign, wp_bind, wp_get_g,
     wp_set_g,
     wp_lift, uniform_expected, expected_pure, ProcedureSignature.localVariableInit,
@@ -198,15 +207,16 @@ theorem wp_commit (args : G × F)
     Lens.fst, Lens.snd, Lens.id, ProcedureState.localL,
     LocalVariableState.paramsL, LocalVariableState.varsL]
 
-theorem wp_verify (args : G × F × G × F) (f : ProgramDenotation.Post State Bool) :
+theorem wp_verify (args : group.G × group.F × group.G × group.F)
+    (f : ProgramDenotation.Post State Bool) :
     (procedureDenotation
-        (sig := procsig (pedersenTypes.Value, pedersenTypes.Message,
-          pedersenTypes.Commitment, pedersenTypes.OpeningKey) -> Bool)
-        Pedersen.verify.procedure args).wp f
-      = fun st => f (args.2.2.1 == g ^ args.2.2.2 * args.1 ^ args.2.1, st) := by
+        (sig := procsig (group.types.Value, group.types.Message,
+          group.types.Commitment, group.types.OpeningKey) -> Bool)
+        (Pedersen.verify.procedure group) args).wp f
+      = fun st => f (args.2.2.1 == group.g ^ args.2.2.2 * args.1 ^ args.2.1, st) := by
   rw [procedureDenotation_eq_procWrap, wp_procWrap]
   funext st
-  simp [pedersenTypes,
+  simp [PedersenGroup.types,
     Pedersen.verify.procedure, programDenotation, StmtWithHoles.assign, wp_bind, wp_get_g,
     wp_set_g,
     wp_lift, expected_pure, ProcedureSignature.localVariableInit,
@@ -236,44 +246,54 @@ chain of `Module.fst'`/`Module.snd'` through `Pedersen`'s expression.  So a lemm
 aimed at the wrong one of the two fails with the two sides displaying identically, or with "did
 not find an occurrence of the pattern" against a goal in which the pattern is apparently right
 there.  `set_option pp.explicit true` is what tells them apart.  A second, similar trap: signature
-spellings must be `pedersenTypes.*`, not `G`/`F` — those are defeq, but `Eq` carries its type
-as an index, so the two are *different propositions* and `exact` rejects the mismatch, again
+spellings must be `group.types.*`, not `group.G`/`group.F` — those are defeq, but `Eq` carries its
+type as an index, so the two are *different propositions* and `exact` rejects the mismatch, again
 printing identically (`convert … using 2` exposes that one).  The `wp_*` lemmas above are spelled
-`pedersenTypes.*` for exactly this reason.
+`group.types.*` for exactly this reason.
 
-A third, from `pedersenTypes` being `@[reducible]`: `simp` files a lemma under the discrimination
-key of its *statement*, and indexes the goal with `pedersenTypes.Message` already reduced to `F`,
-so a lemma stated over an abstract `types` — every `apply_simp` the `module` command emits — is
-looked up under a key the goal no longer has, and silently does not fire ("This simp argument is
-unused").  `rw` unifies rather than looking up and is unaffected; that is why the first step of
-`pedersen_correctness` is a `rw`. -/
+A third, from `PedersenGroup.types` being `@[reducible]`: `simp` files a lemma under the
+discrimination key of its *statement*, and indexes the goal with `group.types.Message` already
+reduced to `group.F`, so a lemma stated over an abstract `types` — every `apply_simp` the `module`
+command emits — used to be looked up under a key the goal no longer had, and silently did not fire
+("This simp argument is unused").  The commands now keep those positions out of the key with
+`no_index` (see "Keeping the generated `@[simp]` lemmas findable" in `Syntax/ModuleSyntax.lean`), so
+the lemmas are found at a reducible instantiation too: `pedersen_correctness2` below reduces the
+whole applied functor with a single `simp`.
+
+`pedersen_correctness` still reduces it by `rw`, for a different reason: reaching the goal through
+the `suffices` leaves it type-incorrect at the `instances` transparency simp works at (`m :
+group.F` where `(procsig (group.F) → Bool).ParamType` is expected), and simp then declines.  `rw`
+unifies at default transparency and is unaffected. -/
 
 set_option linter.flexible false in
 /-- **Correctness of Pedersen** — EC's
     `hoare[Correctness(Pedersen).main : true ==> res]`: from any initial state, the
     correctness game never returns `false`. -/
-theorem pedersen_correctness (m : F) (σ : State) :
-    (procedureDenotation (Module.app (Correctness pedersenTypes) Pedersen).procedure m σ).ofEvent
+theorem pedersen_correctness (m : group.F) (σ : State) :
+    (procedureDenotation
+        (Module.app (Correctness group.types) (Pedersen group)).main.procedure m σ).ofEvent
       {r : Bool × State | r.1 = false} = 0 := by
   -- reduce `ofEvent` to a `wp` with the indicator postcondition.  Done *before* the module
   -- reduction, so nothing here ever has to name the reduced procedure.
   suffices h : (procedureDenotation
-      (Module.app (Correctness pedersenTypes) Pedersen).procedure m).wp
+      (Module.app (Correctness group.types) (Pedersen group)).main.procedure m).wp
       (({r : Bool × State | r.1 = false}).indicator fun _ => 1) σ = 0 by
     have hi := expectation_indicator
-      (procedureDenotation (Module.app (Correctness pedersenTypes) Pedersen).procedure m σ)
+      (procedureDenotation
+        (Module.app (Correctness group.types) (Pedersen group)).main.procedure m σ)
       {r : Bool × State | r.1 = false} 1
     rw [one_mul] at hi
     exact_mod_cast hi.symm.trans h
   -- β/δ-reduce the applied functor down to `Correctness.main`'s body with Pedersen's three
-  -- procedures in the holes — the `module` command's own `@[simp]` lemmas do all of it.
-  -- `rw`, not `simp`, for the outermost step: `pedersenTypes` is reducible (it has to be, for the
-  -- `wp_*` lemmas below to see `G`/`F` through the `pedersenTypes.*` spelling), and simp's
-  -- discrimination tree therefore indexes the goal with `types.Message` already reduced to `F`,
-  -- which is not the key `Correctness.apply_simp` was filed under.  `rw` unifies instead of
-  -- looking up, so it is unaffected.
-  rw [Correctness.apply_simp, Correctness.main.apply_simp,
-    Correctness.main.procedure.apply_simp]
+  -- procedures in the holes — the `module`/`moduletype` commands' own `@[simp]` lemmas do all of
+  -- it.  `rw` rather than `simp` here: the goal the `suffices` above leaves is not type-correct at
+  -- the `instances` transparency simp works at, and simp declines to rewrite in it (see the ⚠
+  -- above); `rw` unifies at default transparency instead.
+  rw [Correctness.apply_simp]
+  -- read `main` back off the record `Correctness.apply_simp` builds — the `moduletype` command's
+  -- own `@[simp]` lemma for the accessor
+  simp only [CorrectnessT.main.mk_simp]
+  rw [Correctness.main.apply_simp, Correctness.main.procedure.apply_simp]
   simp only [Module.proc, Module.procedure_proc]
   -- unfold the game and push `wp` through.  Kept as `rw`, not folded into the `simp only` above:
   -- as simp lemmas these two also fire on the *callees*, and `wp_gen` then no longer matches.
@@ -295,5 +315,48 @@ theorem pedersen_correctness (m : F) (σ : State) :
   -- `Lens.pair`: the game stores `commit`'s result through the tuple l-value `c, d <- …`, so
   -- the final read has to compute back through that pair lens.
   simp [Lens.pair]
+
+omit [ProgramSpec] in
+/-- An event of null points is null.  No `[Countable α]`: `μ.2.2` is the discreteness invariant
+    `μ A = ∑_{x ∈ A} μ {x}`, so the sum over `E` is a `tsum` of zeroes whatever the cardinality. -/
+lemma _root_.GaudisCrypt.SubProbability.ofEvent0I {μ : SubProbability α} :
+    (∀ x ∈ E, μ x = 0) → μ.ofEvent E = 0 := by
+  intro h
+  -- `ofEvent` is `toNNReal` of the measure, and the measure is finite (`≤ 1`), so the two
+  -- vanish together
+  have hzero : ∀ s : Set α, μ.ofEvent s = 0 ↔ μ.1 s = 0 := fun s => by
+    rw [SubProbability.ofEvent, ENNReal.toNNReal_eq_zero_iff]
+    exact or_iff_left
+      (((MeasureTheory.measure_mono (Set.subset_univ s)).trans μ.2.1).trans_lt
+        ENNReal.one_lt_top).ne
+  rw [hzero, μ.2.2 E, ENNReal.tsum_eq_zero]
+  exact fun x => (hzero {(x : α)}).mp (h x x.2)
+
+section UnfinitedExperimentsByDominique
+
+/-- A single point's mass as a `wp`: the postcondition that picks out `x` is the indicator of
+    `{x}`, and `expectation_indicator` at `c = 1` identifies the two. -/
+lemma tmp {sig m σ E} {p : Procedure sig} :
+  (procedureDenotation p m).wp (Set.indicator E fun _ => 1) σ = 0 →
+  (procedureDenotation p m σ).ofEvent E = 0
+  := by
+  intro h
+  simp only [ProgramDenotation.wp, expectation_indicator, one_mul, ENNReal.coe_eq_zero] at h
+  exact h
+
+-- TODO: Can we make p.instantiate (h1,...,hn) work (instead of HoleInstantiation.push etc etc...)?
+-- TODO: Concrete syntax for Module.app
+
+theorem pedersen_correctness2 (m : group.F) (σ : State) :
+    (procedureDenotation
+        (Module.app (Correctness group.types) (Pedersen group)).main.procedure m σ).ofEvent
+      {r : Bool × State | r.1 = false} = 0 := by
+  apply tmp
+  simp
+  -- TODO: why does this not use proc syntax?
+  simp only [Correctness.main.procedure.apply_simp]
+  sorry
+
+end UnfinitedExperimentsByDominique
 
 end GaudisCrypt.Examples.Pedersen
